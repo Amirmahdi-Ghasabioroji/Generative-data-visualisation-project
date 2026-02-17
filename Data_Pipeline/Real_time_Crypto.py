@@ -25,7 +25,6 @@ SYMBOLS = ['BTCUSDT', 'ETHUSDT']
 INTERVAL = "1m"
 # Buffer size for real-time data 
 BUFFER_SIZE = 500
-OUTPUT_DIR = "Binance_realtime"
 
 # Defining the structure of the final numpy array that the PCA/VAE recieve 
 FEATURE_COLS = [
@@ -107,3 +106,93 @@ def extract_features(kline: dict, symbol: str) -> dict | None:
     except (ValueError, KeyError) as e:
         print(f"Error extracting features: {e}")
         return None
+    
+
+# ─────────────────────────────────────────────────────────────
+# STAGE 4: NUMPY FEATURE MATRIX
+# What it does: Converts the rolling buffer into a pure numpy
+# array of shape (N, 10) — the numerical features only, 
+# normalised to [0, 1] for stable PCA/VAE training.
+# Why it matters: This is the direct input to FR2 models.
+# Normalisation prevents high-value features (close price
+# at ~$90,000 for BTC) from dominating PCA components.
+# ─────────────────────────────────────────────────────────────
+
+NUMERICAL_KEYS = [
+    "open", "high", "low", "close", "volume",
+    "num_trades", "price_range", "price_change",
+    "volume_per_trade", "taker_ratio"
+]
+
+def build_feature_matrix(symbol: str) -> np.ndarray:
+    """
+    Build a normalised (N, 10) numpy feature matrix from the buffer.
+    Called after each new closed candle arrives.
+    Returns empty array if buffer has fewer than 2 rows.
+    """
+    buf = list(buffers[symbol])
+    if len(buf) < 2:
+        return np.empty((0, len(NUMERICAL_KEYS)))
+
+    # Stack rows into (N, 10) matrix
+    matrix = np.array(
+        [[row[k] for k in NUMERICAL_KEYS] for row in buf],
+        dtype=np.float64
+    )
+
+    # Min-max normalise each column to [0, 1]
+    col_min = matrix.min(axis=0)
+    col_max = matrix.max(axis=0)
+    col_range = col_max - col_min
+
+    # Identify constant columns (zero range) to avoid division by zero
+    constant_mask = (col_range == 0)
+    col_range[constant_mask] = 1.0
+
+    matrix = (matrix - col_min) / col_range
+
+    # For constant columns, assign a neutral mid-range value (0.5)
+    if np.any(constant_mask):
+        matrix[:, constant_mask] = 0.5
+    return matrix  # Shape: (N, 10) 
+
+
+# ─────────────────────────────────────────────────────────────
+# STAGE 5: CSV SAVING
+# What it does: Appends each closed candle row to a per-symbol
+# CSV file. Creates the folder and file automatically on first run.
+# The output_dir parameter lets you specify exactly where files
+# are saved at runtime rather than relying on a hardcoded path.
+# Why it matters: Lets you collect hours of live data and replay
+# it offline during development — no live connection needed
+# when testing your PCA/VAE models. Separating output_dir as a
+# parameter also makes this safe to call from Flask/React later.
+# ─────────────────────────────────────────────────────────────
+
+def save_row_to_csv(row: dict, symbol: str, output_dir: str = "binance_realtime") -> None:
+    """
+    Append one feature row to the symbol's CSV file.
+    Creates the folder and file with headers automatically if they
+    don't exist yet — no manual setup required.
+
+    Args:
+        row        : Feature dict from extract_features()
+        symbol     : e.g. "BTCUSDT" — used to name the file
+        output_dir : Directory to save CSVs into.
+                     Defaults to data/binance_realtime but can
+                     be overridden at runtime.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    filepath = os.path.join(output_dir, f"{symbol.lower()}_klines.csv")
+    file_exists = os.path.isfile(filepath)
+
+    with open(filepath, 'a', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=FEATURE_COLS)
+
+        if not file_exists:
+            writer.writeheader()
+            print(f"[CSV] Created: {filepath}")  # Confirms exact save location
+
+        writer.writerow(row)
+
+
