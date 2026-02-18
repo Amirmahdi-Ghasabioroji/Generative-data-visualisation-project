@@ -1,4 +1,13 @@
+"""
+PCA Module — Dimensionality Reduction
+Purpose: Reduce dataset dimensionality while keeping most variance.
+Stack: numpy only
+Covers: Fit, Transform, Fit+Transform, Inverse Transform
+"""
+
 import numpy as np
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D  # Needed for 3D plotting
 
 # ─────────────────────────────────────────────────────────────
 # STAGE 1: PCA CLASS DEFINITION
@@ -72,7 +81,7 @@ class PCA:
         self.fit(X)
         return self.transform(X)
 
-   
+    # ─────────────────────────────────────────────────────────────
     # STAGE 5: INVERSE_TRANSFORM METHOD
     # What it does: Maps reduced data back to original feature space.
     # Why it matters: Useful to approximate original data from PCA representation.
@@ -83,8 +92,12 @@ class PCA:
 
 # ─────────────────────────────────────────────────────────────
 # STAGE 6: TEST BLOCK
+# What it does: Simple example to check that PCA works.
+# Why it matters: Quick sanity check before integrating into larger project.
 # ─────────────────────────────────────────────────────────────
 if __name__ == "__main__":
+    
+
     # Generate random dataset (100 samples, 10 features)
     X = np.random.rand(100, 10)
 
@@ -94,7 +107,21 @@ if __name__ == "__main__":
     # Fit PCA and reduce data
     X_reduced = pca.fit_transform(X)
 
-    # Print shapes and explained variance
-    print("Original shape:", X.shape)
-    print("Reduced shape:", X_reduced.shape)
+    # 3D scatter plot
+    fig = plt.figure(figsize=(8, 6))
+    ax = fig.add_subplot(111, projection='3d')
+    ax.scatter(
+        X_reduced[:, 0], 
+        X_reduced[:, 1], 
+        X_reduced[:, 2], 
+        c='skyblue', edgecolor='k', s=50
+    )
+    ax.set_title("PCA: 3D Projection of Random Data")
+    ax.set_xlabel("PC1")
+    ax.set_ylabel("PC2")
+    ax.set_zlabel("PC3")
+    plt.show()
+
+    # Print explained variance ratio for reference
     print("Explained variance ratio:", pca.explained_variance_ratio_)
+
