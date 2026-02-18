@@ -83,8 +83,6 @@ class PCA:
 
 # ─────────────────────────────────────────────────────────────
 # STAGE 6: TEST BLOCK
-# What it does: Simple example to check that PCA works.
-# Why it matters: Quick sanity check before integrating into larger project.
 # ─────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     # Generate random dataset (100 samples, 10 features)
