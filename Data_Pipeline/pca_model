@@ -1,10 +1,3 @@
-"""
-PCA Module — Dimensionality Reduction
-Purpose: Reduce dataset dimensionality while keeping most variance.
-Stack: numpy only
-Covers: Fit, Transform, Fit+Transform, Inverse Transform
-"""
-
 import numpy as np
 
 # ─────────────────────────────────────────────────────────────
