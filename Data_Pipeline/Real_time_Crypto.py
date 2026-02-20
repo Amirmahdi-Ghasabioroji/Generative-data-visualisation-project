@@ -8,10 +8,18 @@ Covers: FR1 (live ingestion), FR4 (real-time updates), NFR1 (<500ms latency)
 import asyncio
 import csv
 import os
+import sys
 import numpy as np
 from collections import deque
 from datetime import datetime
+from pathlib import Path
 from binance import AsyncClient, BinanceSocketManager
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.append(str(PROJECT_ROOT))
+
+from AI_systems import pca_model
 
 # ─────────────────────────────────────────────────────────────
 # STAGE 1: CONFIGURATION
@@ -22,10 +30,11 @@ from binance import AsyncClient, BinanceSocketManager
 
 # Symbols to track
 SYMBOLS = ['BTCUSDT', 'ETHUSDT']
-INTERVAL = "1m"
+INTERVAL = "1s"
 OUTPUT_DIR = "binance_realtime"
+PCA_N_COMPONENTS = 3
 # Buffer size for real-time data 
-BUFFER_SIZE = 500
+BUFFER_SIZE = 250
 
 # Defining the structure of the final numpy array that the PCA/VAE recieve 
 FEATURE_COLS = [
@@ -48,6 +57,9 @@ FEATURE_COLS = [
 
 # One deque per symbol — stores raw row dicts of completed candles
 buffers = {symbol: deque(maxlen=BUFFER_SIZE) for symbol in SYMBOLS}
+
+# One PCA model per symbol (from AI_systems/pca_model.py)
+pca_models = {symbol: pca_model.PCA(n_components=PCA_N_COMPONENTS) for symbol in SYMBOLS}
 
 
 # ─────────────────────────────────────────────────────────────
@@ -158,6 +170,21 @@ def build_feature_matrix(symbol: str) -> np.ndarray:
     return matrix  # Shape: (N, 10) 
 
 
+def run_pca(symbol: str, matrix: np.ndarray) -> np.ndarray | None:
+    """
+    Run PCA using AI_systems/pca_model.py on the current symbol matrix.
+    Returns the latest reduced row, or None if there isn't enough data.
+    """
+    min_rows = max(PCA_N_COMPONENTS + 1, 2)
+    if matrix.shape[0] < min_rows:
+        return None
+
+    model = pca_models[symbol]
+    model.fit(matrix)
+    reduced = model.transform(matrix)
+    return reduced[-1]
+
+
 # ─────────────────────────────────────────────────────────────
 # STAGE 5: CSV SAVING
 # What it does: Appends each closed candle row to a per-symbol
@@ -248,12 +275,12 @@ async def stream_symbol(bm: BinanceSocketManager, symbol: str) -> None:
                 f"Matrix: {matrix.shape}"
             )
 
-            # ── PLUG YOUR MODEL IN HERE ──────────────────────────
-            # When Weeks 5-6 arrive, replace this comment with:
-            #   pca_result = pca_model.transform(matrix)
-            # or in Weeks 7-8:
-            #   latent_z = vae_encoder(torch.tensor(matrix))
-            # ─────────────────────────────────────────────────────
+            pca_latest = run_pca(symbol, matrix)
+            if pca_latest is None:
+                min_rows = max(PCA_N_COMPONENTS + 1, 2)
+                print(f"[{symbol}] PCA waiting: need >= {min_rows} rows, have {matrix.shape[0]}")
+            else:
+                print(f"[{symbol}] PCA latest ({PCA_N_COMPONENTS}D): {np.round(pca_latest, 4).tolist()}")
 
 # ─────────────────────────────────────────────────────────────
 # STAGE 7: CONCURRENT STREAM MANAGER
