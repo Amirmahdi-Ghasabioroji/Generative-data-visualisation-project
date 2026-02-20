@@ -35,7 +35,7 @@ OUTPUT_DIR = "binance_realtime"
 PCA_N_COMPONENTS = 3
 ENABLE_PCA_PLOT = True
 # Buffer size for real-time data 
-BUFFER_SIZE = 250
+BUFFER_SIZE = 300
 
 # Defining the structure of the final numpy array that the PCA/VAE recieve 
 FEATURE_COLS = [
@@ -204,7 +204,12 @@ def run_pca(symbol: str, matrix: np.ndarray) -> np.ndarray | None:
 # parameter also makes this safe to call from Flask/React later.
 # ─────────────────────────────────────────────────────────────
 
-def save_row_to_csv(row: dict, symbol: str, output_dir: str = OUTPUT_DIR) -> None:
+def save_row_to_csv(
+    row: dict,
+    symbol: str,
+    output_dir: str = OUTPUT_DIR,
+    max_rows: int = BUFFER_SIZE,
+) -> None:
     """
     Append one feature row to the symbol's CSV file.
     Creates the folder and file with headers automatically if they
@@ -219,16 +224,78 @@ def save_row_to_csv(row: dict, symbol: str, output_dir: str = OUTPUT_DIR) -> Non
     """
     os.makedirs(output_dir, exist_ok=True)
     filepath = os.path.join(output_dir, f"{symbol.lower()}_klines.csv")
-    file_exists = os.path.isfile(filepath)
+    rows: list[dict] = []
 
-    with open(filepath, 'a', newline='') as f:
+    if os.path.isfile(filepath):
+        with open(filepath, 'r', newline='') as f:
+            reader = csv.DictReader(f)
+            rows = list(reader)
+    else:
+        print(f"[CSV] Created: {filepath}")
+
+    rows.append(row)
+    if len(rows) > max_rows:
+        rows = rows[-max_rows:]
+
+    with open(filepath, 'w', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=FEATURE_COLS)
+        writer.writeheader()
+        writer.writerows(rows)
 
-        if not file_exists:
-            writer.writeheader()
-            print(f"[CSV] Created: {filepath}")  # Confirms exact save location
 
-        writer.writerow(row)
+def _parse_saved_row(raw_row: dict, symbol: str) -> dict | None:
+    """
+    Convert one CSV row (strings) back into a typed feature row.
+    Returns None if parsing fails.
+    """
+    try:
+        return {
+            "timestamp": raw_row["timestamp"],
+            "symbol": symbol,
+            "open": float(raw_row["open"]),
+            "high": float(raw_row["high"]),
+            "low": float(raw_row["low"]),
+            "close": float(raw_row["close"]),
+            "volume": float(raw_row["volume"]),
+            "num_trades": int(float(raw_row["num_trades"])),
+            "quote_volume": float(raw_row["quote_volume"]),
+            "taker_volume": float(raw_row["taker_volume"]),
+            "price_range": float(raw_row["price_range"]),
+            "price_change": float(raw_row["price_change"]),
+            "volume_per_trade": float(raw_row["volume_per_trade"]),
+            "taker_ratio": float(raw_row["taker_ratio"]),
+        }
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def preload_buffers_from_csv(output_dir: str = OUTPUT_DIR, max_rows: int = BUFFER_SIZE) -> None:
+    """
+    Preload each symbol buffer from existing CSV so startup begins with history.
+    Loads only the latest max_rows rows per symbol.
+    """
+    for symbol in SYMBOLS:
+        if len(buffers[symbol]) > 0:
+            continue
+
+        filepath = os.path.join(output_dir, f"{symbol.lower()}_klines.csv")
+        if not os.path.isfile(filepath):
+            print(f"[PRELOAD] {symbol}: no CSV found ({filepath})")
+            continue
+
+        with open(filepath, 'r', newline='') as f:
+            reader = csv.DictReader(f)
+            raw_rows = list(reader)
+
+        loaded_count = 0
+        for raw_row in raw_rows[-max_rows:]:
+            parsed = _parse_saved_row(raw_row, symbol)
+            if parsed is None:
+                continue
+            buffers[symbol].append(parsed)
+            loaded_count += 1
+
+        print(f"[PRELOAD] {symbol}: loaded {loaded_count} rows from CSV")
 
 # ─────────────────────────────────────────────────────────────
 # STAGE 6: STREAM LISTENER (one per symbol)
@@ -311,6 +378,8 @@ async def run_pipeline() -> None:
     print(f"  Output  : {OUTPUT_DIR}/")
     print(f"  PCA Plot: {'ON' if ENABLE_PCA_PLOT else 'OFF'}")
     print("=" * 50)
+
+    preload_buffers_from_csv(OUTPUT_DIR, BUFFER_SIZE)
 
     # No API key needed for public market streams
     client = await AsyncClient.create()
