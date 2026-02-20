@@ -37,7 +37,7 @@ ENABLE_PCA_PLOT = True
 # Buffer size for real-time data 
 BUFFER_SIZE = 300
 
-# Defining the structure of the final numpy array that the PCA/VAE recieve 
+# Defining the structure of the final numpy array that the PCA/VAE receive
 FEATURE_COLS = [
     "timestamp", "symbol",
     "open", "high", "low", "close", "volume",
@@ -72,7 +72,7 @@ pca_models = {symbol: pca_model.PCA(n_components=PCA_N_COMPONENTS) for symbol in
 # that raw OHLCV alone doesn't capture.
 #
 # Key: we only process candles where kline['x'] == True,
-# meaning the 1-minute candle is CLOSED (final values).
+# meaning the configured interval candle is CLOSED (final values).
 # Binance streams partial updates every ~250ms — filtering
 # to closed candles only gives you clean, stable data points.
 # ─────────────────────────────────────────────────────────────

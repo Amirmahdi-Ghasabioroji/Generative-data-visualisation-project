@@ -107,7 +107,6 @@ class PCA:
         self,
         X_reduced: np.ndarray,
         title: str = "PCA: 3D Projection",
-        color: str = "skyblue",
         point_size: int = 20,
     ):
         if X_reduced.ndim != 2 or X_reduced.shape[1] < 3:
@@ -214,8 +213,6 @@ class PCA:
 # Why it matters: Quick sanity check before integrating into larger project.
 # ─────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    
-
     # Generate random dataset (100 samples, 10 features)
     X = np.random.rand(100, 10)
 
