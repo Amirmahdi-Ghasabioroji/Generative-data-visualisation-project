@@ -330,20 +330,19 @@ def _prompt_bluesky_credentials() -> tuple[str | None, str | None]:
 
 
 def _load_previous_uris(output_dir: str) -> set[str]:
-    posts_json_path = Path(output_dir) / "posts.json"
-    if not posts_json_path.exists():
+    posts_csv_path = Path(output_dir) / "posts.csv"
+    if not posts_csv_path.exists():
         return set()
 
     try:
-        with posts_json_path.open("r", encoding="utf-8") as f:
-            data = json.load(f)
-        if not isinstance(data, list):
-            return set()
-        return {
-            (item.get("uri") or "").strip()
-            for item in data
-            if isinstance(item, dict) and (item.get("uri") or "").strip()
-        }
+        uris: set[str] = set()
+        with posts_csv_path.open("r", encoding="utf-8", newline="") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                uri = (row.get("uri") or "").strip()
+                if uri:
+                    uris.add(uri)
+        return uris
     except Exception:
         return set()
 
@@ -367,7 +366,6 @@ def save_static_dataset(
     Save one static Bluesky dataset snapshot to disk.
 
     Artifacts:
-            - posts.json        : raw post dictionaries
             - posts.csv         : table view for quick inspection
             - features.npy      : feature matrix for AI systems
             - pca_3d.npy        : 3D coordinates for visualization
@@ -376,14 +374,10 @@ def save_static_dataset(
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
 
-    posts_json_path = out / "posts.json"
     posts_csv_path = out / "posts.csv"
     features_path = out / "features.npy"
     pca_coords_path = out / "pca_3d.npy"
     summary_path = out / "summary.json"
-
-    with posts_json_path.open("w", encoding="utf-8") as f:
-        json.dump(posts, f, ensure_ascii=False, indent=2)
 
     fieldnames = [
         "text",
@@ -391,6 +385,7 @@ def save_static_dataset(
         "like_count",
         "repost_count",
         "reply_count",
+        "uri",
         "has_image",
         "has_link",
         "char_count",
@@ -411,7 +406,6 @@ def save_static_dataset(
         "feature_shape": list(X.shape),
         "pca_shape": list(X_reduced.shape),
         "artifacts": {
-            "posts_json": str(posts_json_path),
             "posts_csv": str(posts_csv_path),
             "features_npy": str(features_path),
             "pca_3d_npy": str(pca_coords_path),
@@ -433,7 +427,7 @@ def save_static_dataset(
 # ─────────────────────────────────────────────────────────────
 
 def run_static_bluesky_pipeline(
-    query: str = "generative art",
+    query: str = "generative art", # This can be parameterized as needed for different runs or experiments
     limit: int = 300,
     n_components: int = 3,
     output_dir: str | None = None,
