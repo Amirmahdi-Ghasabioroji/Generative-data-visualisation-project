@@ -9,7 +9,11 @@ Dependencies:
 import re
 import time
 import unicodedata
+import csv
+import json
+import getpass
 from datetime import datetime
+from pathlib import Path
 
 import numpy as np
 from atproto import Client
@@ -96,9 +100,30 @@ def fetch_bluesky_posts(
 ) -> list[dict]:
     client = Client()
 
+    # Allow credentials to be supplied via environment variables so the
+    # pipeline can run non-interactively.
+    handle = (handle or os.getenv("BLUESKY_HANDLE") or "").strip()
+    password = (password or os.getenv("BLUESKY_APP_PASSWORD") or "").strip()
+
+    # Support users passing handles like @name.bsky.social
+    if handle.startswith("@"):
+        handle = handle[1:]
+
     if handle and password:
-        client.login(handle, password)
-        print(f"[✓] Authenticated as {handle}")
+        try:
+            client.login(handle, password)
+            print(f"[✓] Authenticated as {handle}")
+        except Exception as e:
+            print(f"[!] Login failed for {handle}: {e}")
+            return []
+    elif handle and not password:
+        print("[!] BLUESKY_HANDLE is set but BLUESKY_APP_PASSWORD is missing.")
+        print("    Set both variables in the same terminal session.")
+        return []
+    elif password and not handle:
+        print("[!] BLUESKY_APP_PASSWORD is set but BLUESKY_HANDLE is missing.")
+        print("    Set both variables in the same terminal session.")
+        return []
     else:
         print("[i] Public (unauthenticated) access")
 
@@ -131,7 +156,8 @@ def fetch_bluesky_posts(
             if resp_success is False:
                 if resp_status == 401 or "AuthMissing" in str(response):
                     print("[!] Bluesky API returned 401 (AuthMissing). This endpoint requires authentication.")
-                    print("    Call fetch_bluesky_posts(handle=..., password=...) or provide valid credentials.")
+                    print("    Provide BLUESKY_HANDLE and BLUESKY_APP_PASSWORD (app password),")
+                    print("    or call fetch_bluesky_posts(handle=..., password=...).")
                     return []
                 print(f"[!] Bluesky API error: status={resp_status} response={response}")
                 return []
@@ -275,13 +301,188 @@ def _parse_hour(ts: str) -> float:
         return 12.0
 
 
+def _prompt_bluesky_credentials() -> tuple[str | None, str | None]:
+    """
+    Prompt for Bluesky credentials in interactive runs.
+    Returns (handle, app_password). If input is not provided, returns (None, None).
+    """
+    print("[i] Enter Bluesky credentials to fetch public posts.")
+    print("    Use your handle without @ (example: yourname.bsky.social)")
+
+    try:
+        handle = input("Bluesky handle: ").strip()
+    except EOFError:
+        return None, None
+
+    if not handle:
+        return None, None
+
+    if handle.startswith("@"):
+        handle = handle[1:]
+
+    print("[i] Password input is hidden; just type and press Enter.")
+    try:
+        password = getpass.getpass("Bluesky app password: ").strip()
+    except (EOFError, Exception):
+        print("[i] Hidden input is not available in this terminal. Falling back to visible input.")
+        try:
+            password = input("Bluesky app password (visible): ").strip()
+        except EOFError:
+            return None, None
+
+    if not password:
+        return None, None
+
+    return handle, password
+
+
+def save_static_dataset(
+    posts: list[dict],
+    X: np.ndarray,
+    X_reduced: np.ndarray,
+    query: str,
+    output_dir: str,
+):
+    """
+    Save one static Bluesky dataset snapshot to disk.
+
+    Artifacts:
+            - posts.json        : raw post dictionaries
+            - posts.csv         : table view for quick inspection
+            - features.npy      : feature matrix for AI systems
+            - pca_3d.npy        : 3D coordinates for visualization
+            - summary.json      : run metadata and artifact paths
+    """
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+
+    posts_json_path = out / "posts.json"
+    posts_csv_path = out / "posts.csv"
+    features_path = out / "features.npy"
+    pca_coords_path = out / "pca_3d.npy"
+    summary_path = out / "summary.json"
+
+    with posts_json_path.open("w", encoding="utf-8") as f:
+        json.dump(posts, f, ensure_ascii=False, indent=2)
+
+    fieldnames = [
+        "text",
+        "created_at",
+        "like_count",
+        "repost_count",
+        "reply_count",
+        "has_image",
+        "has_link",
+        "char_count",
+        "word_count",
+    ]
+    with posts_csv_path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(posts)
+
+    np.save(features_path, X)
+    np.save(pca_coords_path, X_reduced)
+
+    summary = {
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "query": query,
+        "num_posts": len(posts),
+        "feature_shape": list(X.shape),
+        "pca_shape": list(X_reduced.shape),
+        "artifacts": {
+            "posts_json": str(posts_json_path),
+            "posts_csv": str(posts_csv_path),
+            "features_npy": str(features_path),
+            "pca_3d_npy": str(pca_coords_path),
+        },
+    }
+
+    with summary_path.open("w", encoding="utf-8") as f:
+        json.dump(summary, f, ensure_ascii=False, indent=2)
+
+    return summary
+
+
+def run_static_bluesky_pipeline(
+    query: str = "generative art",
+    limit: int = 300,
+    n_components: int = 3,
+    output_dir: str | None = None,
+    show_plot: bool = True,
+):
+    """
+    Static pipeline: fetch once, build features, fit PCA, save artifacts.
+    """
+    output_dir = output_dir or os.path.join(ROOT, "Data_Pipeline", "datasets", "bluesky_static")
+
+    env_handle = (os.getenv("BLUESKY_HANDLE") or "").strip()
+    env_password = (os.getenv("BLUESKY_APP_PASSWORD") or "").strip()
+
+    handle = env_handle or None
+    password = env_password or None
+
+    if not (handle and password):
+        print("[i] BLUESKY_HANDLE / BLUESKY_APP_PASSWORD not fully set in environment.")
+        prompt_handle, prompt_password = _prompt_bluesky_credentials()
+        if prompt_handle and prompt_password:
+            handle, password = prompt_handle, prompt_password
+            print(f"[i] Using prompted credentials for {handle}")
+        else:
+            print("[i] No credentials entered. Attempting unauthenticated mode.")
+
+    posts = fetch_bluesky_posts(query=query, limit=limit, handle=handle, password=password)
+    if not posts:
+        print("[i] No Bluesky posts were returned for this query. Exiting cleanly.")
+        print("[i] If you are seeing AuthMissing, provide credentials when prompted or set env vars.")
+        return None
+
+    if len(posts) < limit:
+        print(f"[i] Retrieved {len(posts)} posts (requested {limit}). Continuing with available data.")
+
+    X = build_feature_matrix(posts)
+    if X.shape[0] == 0:
+        print("[i] Empty feature matrix after processing. Exiting cleanly.")
+        return None
+
+    X_reduced, pca = apply_pca(X, n_components=n_components, fit=True)
+    print(f"[✓] PCA reduced matrix ready: {X_reduced.shape}")
+    if getattr(pca, "explained_variance_ratio_", None) is not None:
+        print(f"[i] Explained variance ratio: {np.array2string(pca.explained_variance_ratio_, precision=4)}")
+    preview_rows = min(5, X_reduced.shape[0])
+    print(f"[i] PCA preview (first {preview_rows} rows):")
+    print(X_reduced[:preview_rows])
+
+    if show_plot and X_reduced.shape[1] >= 3:
+        try:
+            import matplotlib.pyplot as plt
+
+            pca.plot_3d_scatter(X_reduced, title="Bluesky Static Dataset PCA (3D)")
+            print("[i] Showing PCA 3D plot (close the plot window to continue)...")
+            plt.show(block=True)
+        except Exception as e:
+            print(f"[i] Could not display PCA plot in this environment: {e}")
+
+    summary = save_static_dataset(
+        posts=posts,
+        X=X,
+        X_reduced=X_reduced,
+        query=query,
+        output_dir=output_dir,
+    )
+
+    print("[✓] Static dataset snapshot saved")
+    print(f"    query: {summary['query']}")
+    print(f"    posts: {summary['num_posts']}")
+    print(f"    features: {summary['feature_shape']}")
+    print(f"    pca_3d: {summary['pca_shape']}")
+    print(f"    summary file: {summary['artifacts']}")
+    return summary
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # USAGE
 # ═══════════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    posts = fetch_bluesky_posts(query="generative art", limit=300)
-    if not posts:
-        print("[i] No Bluesky posts were returned for this query. Exiting cleanly.")
-    else:
-        X = build_feature_matrix(posts)
+    run_static_bluesky_pipeline(query="generative art", limit=300, n_components=3)
