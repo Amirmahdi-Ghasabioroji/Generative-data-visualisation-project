@@ -23,7 +23,7 @@ from sklearn.preprocessing import StandardScaler
 
 def fetch_bluesky_posts(
     query: str,
-    limit: int = 250,
+    limit: int = 300,
     handle: str = None,
     password: str = None,
 ) -> list[dict]:
@@ -107,6 +107,10 @@ def build_feature_matrix(
     Returns X : np.ndarray, shape (n_posts, embedding_dim + 15)
     Ready to pass directly into your PCA / VAE.
     """
+    if not posts:
+        print("[i] No posts found. Returning empty feature matrix.")
+        return np.empty((0, 15), dtype=np.float64)
+
     texts = [p["text"] for p in posts]
 
     # ── Semantic embeddings ───────────────────────────────────────────────────
@@ -168,9 +172,8 @@ def _parse_hour(ts: str) -> float:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    posts = fetch_bluesky_posts(query="generative art", limit=200)
-    X = build_feature_matrix(posts)
-
-    # Feed into your models:
-    # pca_coords = your_pca.transform(X)
-    # vae_output = your_vae.encode(X)
+    posts = fetch_bluesky_posts(query="generative art", limit=300)
+    if not posts:
+        print("[i] No Bluesky posts were returned for this query. Exiting cleanly.")
+    else:
+        X = build_feature_matrix(posts)
