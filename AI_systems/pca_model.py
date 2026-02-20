@@ -26,6 +26,8 @@ class PCA:
         self.components_ = None
         self.explained_variance_ = None
         self.explained_variance_ratio_ = None
+        self._fig = None
+        self._ax = None
 
     # ─────────────────────────────────────────────────────────────
     # STAGE 2: FIT METHOD
@@ -89,9 +91,54 @@ class PCA:
     def inverse_transform(self, X_reduced: np.ndarray):
         return np.dot(X_reduced, self.components_.T) + self.mean_
 
+    # ─────────────────────────────────────────────────────────────
+    # STAGE 6: 3D PLOTTING FOR PIPELINE USE
+    # What it does: Renders/updates a non-blocking 3D scatter plot
+    # from PCA-reduced data.
+    # Why it matters: Lets real-time pipelines call this method each
+    # update without freezing the stream loop.
+    # ─────────────────────────────────────────────────────────────
+    def plot_3d_scatter(
+        self,
+        X_reduced: np.ndarray,
+        title: str = "PCA: 3D Projection",
+        color: str = "skyblue",
+        point_size: int = 20,
+    ):
+        if X_reduced.ndim != 2 or X_reduced.shape[1] < 3:
+            raise ValueError("X_reduced must have shape (N, 3+) for 3D plotting")
+
+        if self._fig is None or self._ax is None:
+            plt.ion()
+            self._fig = plt.figure(figsize=(8, 6))
+            self._ax = self._fig.add_subplot(111, projection='3d')
+
+        self._ax.cla()
+        self._ax.scatter(
+            X_reduced[:, 0],
+            X_reduced[:, 1],
+            X_reduced[:, 2],
+            c=color,
+            edgecolor='k',
+            s=point_size,
+        )
+        self._ax.set_title(title)
+        self._ax.set_xlabel("PC1")
+        self._ax.set_ylabel("PC2")
+        self._ax.set_zlabel("PC3")
+
+        self._fig.canvas.draw_idle()
+        plt.pause(0.001)
+        return self._fig, self._ax
+
+    def fit_transform_plot_3d(self, X: np.ndarray, title: str = "PCA: 3D Projection"):
+        X_reduced = self.fit_transform(X)
+        self.plot_3d_scatter(X_reduced, title=title)
+        return X_reduced
+
 
 # ─────────────────────────────────────────────────────────────
-# STAGE 6: TEST BLOCK
+# STAGE 7: TEST BLOCK
 # What it does: Simple example to check that PCA works.
 # Why it matters: Quick sanity check before integrating into larger project.
 # ─────────────────────────────────────────────────────────────
@@ -104,22 +151,8 @@ if __name__ == "__main__":
     # Create PCA instance to reduce to 3 components
     pca = PCA(n_components=3)
 
-    # Fit PCA and reduce data
-    X_reduced = pca.fit_transform(X)
-
-    # 3D scatter plot
-    fig = plt.figure(figsize=(8, 6))
-    ax = fig.add_subplot(111, projection='3d')
-    ax.scatter(
-        X_reduced[:, 0], 
-        X_reduced[:, 1], 
-        X_reduced[:, 2], 
-        c='skyblue', edgecolor='k', s=50
-    )
-    ax.set_title("PCA: 3D Projection of Random Data")
-    ax.set_xlabel("PC1")
-    ax.set_ylabel("PC2")
-    ax.set_zlabel("PC3")
+    # Fit, reduce and plot in one call
+    X_reduced = pca.fit_transform_plot_3d(X, title="PCA: 3D Projection of Random Data")
     plt.show()
 
     # Print explained variance ratio for reference
