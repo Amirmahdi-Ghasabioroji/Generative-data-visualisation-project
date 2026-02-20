@@ -32,60 +32,9 @@ if ROOT not in sys.path:
 try:
     sys.stdout.reconfigure(encoding="utf-8")
 except Exception:
-    try:
-        sys.setdefaultencoding  # type: ignore
-    except Exception:
-        pass
+    pass
 
 from AI_systems.pca_model import PCA
-
-
-def save_pca(pca: PCA, path: str):
-    """Save PCA state to a .npz file."""
-    np.savez(path,
-             mean=pca.mean_,
-             components=pca.components_,
-             explained_variance=pca.explained_variance_)
-
-
-def load_pca(path: str) -> PCA:
-    """Load PCA state from a .npz file and return a PCA instance."""
-    data = np.load(path)
-    components = data["components"]
-    n_components = components.shape[1]
-    pca = PCA(n_components=n_components)
-    pca.mean_ = data["mean"]
-    pca.components_ = components
-    pca.explained_variance_ = data["explained_variance"]
-    total = np.sum(pca.explained_variance_)
-    pca.explained_variance_ratio_ = pca.explained_variance_ / total if total != 0 else None
-    return pca
-
-
-def fit_pca_model(X: np.ndarray, n_components: int = 3, model_path: str | None = None):
-    """Fit PCA on X, optionally save, and return reduced coords + PCA instance."""
-    pca = PCA(n_components=n_components)
-    X = np.asarray(X)
-    pca.fit(X)
-    X_reduced = pca.transform(X)
-    if model_path:
-        save_pca(pca, model_path)
-    return X_reduced, pca
-
-
-def transform_with_pca(X: np.ndarray, pca: PCA) -> np.ndarray:
-    """Project X using a fitted PCA instance."""
-    return pca.transform(np.asarray(X))
-
-
-def apply_pca(X: np.ndarray, n_components: int = 3, fit: bool = True, model_path: str | None = None):
-    """Compatibility wrapper: fit or load then transform, returning (coords, pca)."""
-    if fit:
-        return fit_pca_model(X, n_components=n_components, model_path=model_path)
-    if not model_path:
-        raise ValueError("model_path is required when fit=False")
-    pca = load_pca(model_path)
-    return transform_with_pca(X, pca), pca
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -520,7 +469,8 @@ def run_static_bluesky_pipeline(
         print("[i] Empty feature matrix after processing. Exiting cleanly.")
         return None
 
-    X_reduced, pca = apply_pca(X, n_components=n_components, fit=True)
+    pca = PCA(n_components=n_components)
+    X_reduced = pca.fit_transform(X)
     print(f"[✓] PCA reduced matrix ready: {X_reduced.shape}")
     if getattr(pca, "explained_variance_ratio_", None) is not None:
         print(f"[i] Explained variance ratio: {np.array2string(pca.explained_variance_ratio_, precision=4)}")
