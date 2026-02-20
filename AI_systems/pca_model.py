@@ -7,6 +7,7 @@ Covers: Fit, Transform, Fit+Transform, Inverse Transform
 
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib import cm
 from mpl_toolkits.mplot3d import Axes3D  # Needed for 3D plotting
 
 # ─────────────────────────────────────────────────────────────
@@ -28,6 +29,10 @@ class PCA:
         self.explained_variance_ratio_ = None
         self._fig = None
         self._ax = None
+        self._scatter = None
+        self._latest_point = None
+        self._cbar = None
+        self._axis_limits = None
 
     # ─────────────────────────────────────────────────────────────
     # STAGE 2: FIT METHOD
@@ -109,23 +114,89 @@ class PCA:
             raise ValueError("X_reduced must have shape (N, 3+) for 3D plotting")
 
         if self._fig is None or self._ax is None:
+            plt.style.use("dark_background")
             plt.ion()
             self._fig = plt.figure(figsize=(8, 6))
             self._ax = self._fig.add_subplot(111, projection='3d')
+            self._ax.set_xlabel("PC1")
+            self._ax.set_ylabel("PC2")
+            self._ax.set_zlabel("PC3")
+            self._ax.grid(alpha=0.25)
 
-        self._ax.cla()
-        self._ax.scatter(
-            X_reduced[:, 0],
-            X_reduced[:, 1],
-            X_reduced[:, 2],
-            c=color,
-            edgecolor='k',
-            s=point_size,
-        )
+        x_vals = X_reduced[:, 0]
+        y_vals = X_reduced[:, 1]
+        z_vals = X_reduced[:, 2]
+        color_idx = np.linspace(0, 1, X_reduced.shape[0])
+        rgba_colors = cm.rainbow(color_idx)
+        rgba_colors[:, 3] = np.linspace(0.20, 0.95, X_reduced.shape[0])
+
+        x_min, x_max = float(np.min(x_vals)), float(np.max(x_vals))
+        y_min, y_max = float(np.min(y_vals)), float(np.max(y_vals))
+        z_min, z_max = float(np.min(z_vals)), float(np.max(z_vals))
+
+        if self._axis_limits is None:
+            self._axis_limits = {
+                "x": [x_min, x_max],
+                "y": [y_min, y_max],
+                "z": [z_min, z_max],
+            }
+        else:
+            self._axis_limits["x"][0] = min(self._axis_limits["x"][0], x_min)
+            self._axis_limits["x"][1] = max(self._axis_limits["x"][1], x_max)
+            self._axis_limits["y"][0] = min(self._axis_limits["y"][0], y_min)
+            self._axis_limits["y"][1] = max(self._axis_limits["y"][1], y_max)
+            self._axis_limits["z"][0] = min(self._axis_limits["z"][0], z_min)
+            self._axis_limits["z"][1] = max(self._axis_limits["z"][1], z_max)
+
+        def padded_limits(low: float, high: float) -> tuple[float, float]:
+            if low == high:
+                return low - 0.5, high + 0.5
+            pad = (high - low) * 0.1
+            return low - pad, high + pad
+
+        x_low, x_high = padded_limits(*self._axis_limits["x"])
+        y_low, y_high = padded_limits(*self._axis_limits["y"])
+        z_low, z_high = padded_limits(*self._axis_limits["z"])
+        self._ax.set_xlim(x_low, x_high)
+        self._ax.set_ylim(y_low, y_high)
+        self._ax.set_zlim(z_low, z_high)
+
+        if self._scatter is None:
+            self._scatter = self._ax.scatter(
+                x_vals,
+                y_vals,
+                z_vals,
+                c=rgba_colors,
+                edgecolor='none',
+                s=point_size,
+            )
+            self._cbar = self._fig.colorbar(
+                cm.ScalarMappable(cmap="rainbow"),
+                ax=self._ax,
+                pad=0.1,
+                fraction=0.03,
+            )
+            self._cbar.set_label("Time (old → new)", rotation=270, labelpad=14)
+        else:
+            self._scatter._offsets3d = (x_vals, y_vals, z_vals)
+            self._scatter.set_sizes(np.full(x_vals.shape[0], point_size))
+            self._scatter.set_facecolors(rgba_colors)
+
+        if self._latest_point is None:
+            self._latest_point = self._ax.scatter(
+                [x_vals[-1]],
+                [y_vals[-1]],
+                [z_vals[-1]],
+                c='white',
+                edgecolor='black',
+                s=point_size * 2,
+                marker='o',
+            )
+        else:
+            self._latest_point._offsets3d = ([x_vals[-1]], [y_vals[-1]], [z_vals[-1]])
+            self._latest_point.set_sizes(np.array([point_size * 2]))
+
         self._ax.set_title(title)
-        self._ax.set_xlabel("PC1")
-        self._ax.set_ylabel("PC2")
-        self._ax.set_zlabel("PC3")
 
         self._fig.canvas.draw_idle()
         plt.pause(0.001)

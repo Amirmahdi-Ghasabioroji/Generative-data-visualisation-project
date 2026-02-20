@@ -23,7 +23,7 @@ from sklearn.preprocessing import StandardScaler
 
 def fetch_bluesky_posts(
     query: str,
-    limit: int = 200,
+    limit: int = 250,
     handle: str = None,
     password: str = None,
 ) -> list[dict]:
