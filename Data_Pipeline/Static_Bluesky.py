@@ -1,6 +1,9 @@
 """
-Bluesky Data Pipeline
-Outputs: X_combined (np.ndarray) ready to feed into your PCA / VAE
+Bluesky Static Data Pipeline
+Purpose: Fetch a batch snapshot from Bluesky and convert it into
+AI-ready arrays for PCA/VAE workflows.
+Stack: atproto + numpy + sentence-transformers + scikit-learn
+Mode: Static/batch (runs on demand, not real-time streaming)
 
 Dependencies:
     pip install atproto numpy sentence-transformers scikit-learn
@@ -22,6 +25,14 @@ from sklearn.preprocessing import StandardScaler
 import os
 import sys
 
+# ─────────────────────────────────────────────────────────────
+# STAGE 1: ENVIRONMENT SETUP
+# What it does: Prepares imports/path/console behavior so this
+# script can run directly from the project workspace.
+# Why it matters: Keeps module imports stable and avoids common
+# Windows console encoding issues during output logging.
+# ─────────────────────────────────────────────────────────────
+
 # Ensure workspace root is on sys.path so AI_systems can be imported when
 # running this script directly.
 ROOT = os.path.dirname(os.path.dirname(__file__))
@@ -37,9 +48,13 @@ except Exception:
 from AI_systems.pca_model import PCA
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# 1. INGESTION
-# ═══════════════════════════════════════════════════════════════════════════════
+# ─────────────────────────────────────────────────────────────
+# STAGE 2: AUTHENTICATION + INGESTION
+# What it does: Opens a Bluesky session, searches posts, and
+# normalizes API records into a consistent internal schema.
+# Why it matters: Gives downstream feature/PCA stages one clean
+# list-of-dicts format independent of API response shape.
+# ─────────────────────────────────────────────────────────────
 
 def fetch_bluesky_posts(
     query: str,
@@ -193,9 +208,13 @@ def _has_link(record) -> bool:
     return False
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# 2. FEATURE ENGINEERING
-# ═══════════════════════════════════════════════════════════════════════════════
+# ─────────────────────────────────────────────────────────────
+# STAGE 3: FEATURE ENGINEERING
+# What it does: Converts text/engagement/structure/time signals
+# into one numerical feature matrix.
+# Why it matters: Produces model-ready input for PCA or future
+# AI systems with a reproducible feature recipe.
+# ─────────────────────────────────────────────────────────────
 
 def build_feature_matrix(
     posts: list[dict],
@@ -267,6 +286,14 @@ def _parse_hour(ts: str) -> float:
         return 12.0
 
 
+# ─────────────────────────────────────────────────────────────
+# STAGE 4: INPUT + FRESHNESS HELPERS
+# What it does: Handles interactive credential prompts and reads
+# prior saved post identifiers for "new data" filtering.
+# Why it matters: Improves run reliability and helps generate
+# fresher snapshots across repeated executions.
+# ─────────────────────────────────────────────────────────────
+
 def _prompt_bluesky_credentials() -> tuple[str | None, str | None]:
     """
     Prompt for Bluesky credentials in interactive runs.
@@ -320,6 +347,14 @@ def _load_previous_uris(output_dir: str) -> set[str]:
     except Exception:
         return set()
 
+
+# ─────────────────────────────────────────────────────────────
+# STAGE 5: DATASET SERIALISATION
+# What it does: Writes raw posts, CSV table, feature arrays and
+# summary metadata into a reusable static dataset bundle.
+# Why it matters: Makes outputs directly consumable by your AI
+# modules and easy to inspect/debug between runs.
+# ─────────────────────────────────────────────────────────────
 
 def save_static_dataset(
     posts: list[dict],
@@ -388,6 +423,14 @@ def save_static_dataset(
 
     return summary
 
+
+# ─────────────────────────────────────────────────────────────
+# STAGE 6: PIPELINE ORCHESTRATION
+# What it does: Executes the full batch flow end-to-end:
+# credentials → fetch → freshness filter → features → PCA → save.
+# Why it matters: Single entrypoint for repeatable experimentation
+# and consistent artifact generation per run.
+# ─────────────────────────────────────────────────────────────
 
 def run_static_bluesky_pipeline(
     query: str = "generative art",
@@ -505,9 +548,12 @@ def run_static_bluesky_pipeline(
     return summary
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# USAGE
-# ═══════════════════════════════════════════════════════════════════════════════
+# ─────────────────────────────────────────────────────────────
+# STAGE 7: SCRIPT ENTRYPOINT
+# What it does: Defines default run parameters for direct CLI use.
+# Why it matters: Keeps one obvious start point for project demos
+# and quick local experiments.
+# ─────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     run_static_bluesky_pipeline(query="generative art", limit=300, n_components=3)
