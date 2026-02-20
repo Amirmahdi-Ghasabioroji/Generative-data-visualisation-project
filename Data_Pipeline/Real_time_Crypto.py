@@ -23,6 +23,7 @@ from binance import AsyncClient, BinanceSocketManager
 # Symbols to track
 SYMBOLS = ['BTCUSDT', 'ETHUSDT']
 INTERVAL = "1m"
+OUTPUT_DIR = "binance_realtime"
 # Buffer size for real-time data 
 BUFFER_SIZE = 500
 
@@ -169,7 +170,7 @@ def build_feature_matrix(symbol: str) -> np.ndarray:
 # parameter also makes this safe to call from Flask/React later.
 # ─────────────────────────────────────────────────────────────
 
-def save_row_to_csv(row: dict, symbol: str, output_dir: str = "binance_realtime") -> None:
+def save_row_to_csv(row: dict, symbol: str, output_dir: str = OUTPUT_DIR) -> None:
     """
     Append one feature row to the symbol's CSV file.
     Creates the folder and file with headers automatically if they
@@ -195,4 +196,122 @@ def save_row_to_csv(row: dict, symbol: str, output_dir: str = "binance_realtime"
 
         writer.writerow(row)
 
+# ─────────────────────────────────────────────────────────────
+# STAGE 6: STREAM LISTENER (one per symbol)
+# What it does: Opens a persistent WebSocket to Binance for one
+# symbol and processes every incoming kline message.
+# Why it matters: asyncio.gather() in Stage 7 runs one of these
+# for BTC and one for ETH simultaneously — they're completely
+# independent but share the same buffers and CSV files.
+#
+# Important Binance behaviour: the stream sends an update every
+# ~250ms for the CURRENT candle. We filter with kline['x']
+# so we only process a candle once it's fully closed.
+# ─────────────────────────────────────────────────────────────
 
+async def stream_symbol(bm: BinanceSocketManager, symbol: str) -> None:
+    """
+    Listen to kline stream for one symbol indefinitely.
+    On each closed candle: extract features → buffer → save CSV → build matrix.
+    """
+    print(f"[STREAM] Starting {symbol} @ {INTERVAL}")
+
+    async with bm.kline_socket(symbol=symbol, interval=INTERVAL) as stream:
+        while True:
+            msg = await stream.recv()
+
+            # Handle stream errors gracefully (NFR4)
+            if msg.get('e') == 'error':
+                print(f"[ERROR] {symbol}: {msg.get('m', 'unknown error')}")
+                break
+
+            kline = msg['k']
+            row = extract_features(kline, symbol)
+
+            if row is None:
+                continue  # Candle still open, skip
+
+            # Add to rolling buffer
+            buffers[symbol].append(row)
+
+            # Save to CSV
+            save_row_to_csv(row, symbol, OUTPUT_DIR)
+
+            # Build feature matrix (this is what your ML model will consume)
+            matrix = build_feature_matrix(symbol)
+
+            print(
+                f"[{symbol}] Candle closed | "
+                f"Close: {row['close']:.2f} | "
+                f"Trades: {row['num_trades']} | "
+                f"Buffer: {len(buffers[symbol])}/{BUFFER_SIZE} | "
+                f"Matrix: {matrix.shape}"
+            )
+
+            # ── PLUG YOUR MODEL IN HERE ──────────────────────────
+            # When Weeks 5-6 arrive, replace this comment with:
+            #   pca_result = pca_model.transform(matrix)
+            # or in Weeks 7-8:
+            #   latent_z = vae_encoder(torch.tensor(matrix))
+            # ─────────────────────────────────────────────────────
+
+# ─────────────────────────────────────────────────────────────
+# STAGE 7: CONCURRENT STREAM MANAGER
+# What it does: Creates one Binance client, then uses
+# asyncio.gather() to run both symbol streams in parallel.
+# Why it matters: gather() is the correct way to run multiple
+# async streams — they run concurrently in the same event loop
+# without blocking each other. This satisfies NFR1 (<500ms)
+# because neither stream waits for the other.
+# ─────────────────────────────────────────────────────────────
+
+async def run_pipeline() -> None:
+    """
+    Entry point: initialise client and launch both streams concurrently.
+    No API key required — Binance public kline streams are unauthenticated.
+    """
+    print("=" * 50)
+    print("  Binance Real-Time Pipeline — Group J")
+    print(f"  Symbols : {', '.join(SYMBOLS)}")
+    print(f"  Interval: {INTERVAL}")
+    print(f"  Output  : {OUTPUT_DIR}/")
+    print("=" * 50)
+
+    # No API key needed for public market streams
+    client = await AsyncClient.create()
+    bm = BinanceSocketManager(client)
+
+    try:
+        # Run BTC and ETH streams concurrently
+        await asyncio.gather(
+            stream_symbol(bm, "BTCUSDT"),
+            stream_symbol(bm, "ETHUSDT"),
+        )
+    except KeyboardInterrupt:
+        print("\n[STOP] Interrupted by user. Closing connection...")
+    finally:
+        await client.close_connection()
+        print("[DONE] Connection closed. CSVs saved to:", OUTPUT_DIR)
+
+
+# ─────────────────────────────────────────────────────────────
+# STAGE 8: RECONNECTION WRAPPER (NFR4)
+# What it does: Wraps the entire pipeline in a retry loop so
+# that if the WebSocket drops (network blip, Binance restart),
+# it automatically reconnects after 5 seconds.
+# Why it matters: NFR4 requires error handling and graceful
+# degradation. Without this, one dropped connection kills
+# your entire data collection session.
+# ─────────────────────────────────────────────────────────────
+
+async def main() -> None:
+    while True:
+        try:
+            await run_pipeline()
+        except Exception as e:
+            print(f"[WARN] Pipeline error: {e}. Reconnecting in 5s...")
+            await asyncio.sleep(5)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
