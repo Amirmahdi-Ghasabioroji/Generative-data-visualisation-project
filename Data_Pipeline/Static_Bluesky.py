@@ -97,6 +97,8 @@ def fetch_bluesky_posts(
     limit: int = 300,
     handle: str = None,
     password: str = None,
+    sort: str = "latest",
+    exclude_uris: set[str] | None = None,
 ) -> list[dict]:
     client = Client()
 
@@ -143,11 +145,17 @@ def fetch_bluesky_posts(
         return default
 
     posts, cursor, fetched = [], None, 0
+    skipped_existing = 0
 
     while fetched < limit:
         try:
             response = client.app.bsky.feed.search_posts(
-                params={"q": query, "limit": min(100, limit - fetched), "cursor": cursor}
+                params={
+                    "q": query,
+                    "limit": min(100, limit - fetched),
+                    "cursor": cursor,
+                    "sort": sort,
+                }
             )
 
             # If the API returned an error-like response (e.g. success=False), handle it now
@@ -183,19 +191,25 @@ def fetch_bluesky_posts(
                 repost_count = _get_any(post, ["repost_count", "repostCount", "reposts"], 0) or 0
                 reply_count = _get_any(post, ["reply_count", "replyCount", "replies"], 0) or 0
 
+                uri = _get_any(post, ["uri", "post_uri", "id"], "") or ""
+                if exclude_uris and uri and uri in exclude_uris:
+                    skipped_existing += 1
+                    continue
+
                 posts.append({
                     "text":         text,
                     "created_at":   created_at,
                     "like_count":   like_count,
                     "repost_count": repost_count,
                     "reply_count":  reply_count,
+                    "uri":          uri,
                     "has_image":    _has_image(record),
                     "has_link":     _has_link(record),
                     "char_count":   len(text),
                     "word_count":   len(text.split()),
                 })
 
-            fetched += len(batch)
+            fetched = len(posts)
             cursor = _get_any(response, ["cursor", "next", "cursor_str"], None)
             print(f"  [{fetched}/{limit}] fetched …")
 
@@ -207,6 +221,9 @@ def fetch_bluesky_posts(
         except Exception as e:
             print(f"[!] fetch_bluesky_posts error: {e}")
             break
+
+    if exclude_uris:
+        print(f"[i] Skipped {skipped_existing} posts already present in previous dataset.")
 
     return posts[:limit]
 
@@ -336,6 +353,25 @@ def _prompt_bluesky_credentials() -> tuple[str | None, str | None]:
     return handle, password
 
 
+def _load_previous_uris(output_dir: str) -> set[str]:
+    posts_json_path = Path(output_dir) / "posts.json"
+    if not posts_json_path.exists():
+        return set()
+
+    try:
+        with posts_json_path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, list):
+            return set()
+        return {
+            (item.get("uri") or "").strip()
+            for item in data
+            if isinstance(item, dict) and (item.get("uri") or "").strip()
+        }
+    except Exception:
+        return set()
+
+
 def save_static_dataset(
     posts: list[dict],
     X: np.ndarray,
@@ -431,7 +467,41 @@ def run_static_bluesky_pipeline(
         else:
             print("[i] No credentials entered. Attempting unauthenticated mode.")
 
-    posts = fetch_bluesky_posts(query=query, limit=limit, handle=handle, password=password)
+    print(f"[i] Fetch request timestamp: {datetime.now().isoformat(timespec='seconds')}")
+
+    previous_uris = _load_previous_uris(output_dir)
+    if previous_uris:
+        print(f"[i] Previous dataset has {len(previous_uris)} post URIs; fetching unseen posts first.")
+
+    fetch_pool_limit = max(limit * 3, limit)
+    posts_pool = fetch_bluesky_posts(
+        query=query,
+        limit=fetch_pool_limit,
+        handle=handle,
+        password=password,
+        sort="latest",
+        exclude_uris=previous_uris,
+    )
+
+    if not posts_pool and previous_uris:
+        print("[i] No unseen posts found in latest pool; falling back to latest posts regardless of prior run.")
+        posts_pool = fetch_bluesky_posts(
+            query=query,
+            limit=fetch_pool_limit,
+            handle=handle,
+            password=password,
+            sort="latest",
+            exclude_uris=None,
+        )
+
+    if len(posts_pool) > limit:
+        rng = np.random.default_rng()
+        sample_idx = rng.choice(len(posts_pool), size=limit, replace=False)
+        posts = [posts_pool[int(i)] for i in sample_idx]
+        print(f"[i] Sampled {limit} posts from fresh pool of {len(posts_pool)}.")
+    else:
+        posts = posts_pool
+
     if not posts:
         print("[i] No Bluesky posts were returned for this query. Exiting cleanly.")
         print("[i] If you are seeing AuthMissing, provide credentials when prompted or set env vars.")
@@ -439,6 +509,11 @@ def run_static_bluesky_pipeline(
 
     if len(posts) < limit:
         print(f"[i] Retrieved {len(posts)} posts (requested {limit}). Continuing with available data.")
+
+    if posts:
+        first_created_at = posts[0].get("created_at", "")
+        last_created_at = posts[-1].get("created_at", "")
+        print(f"[i] Created_at range in fetched posts: newest={first_created_at} oldest={last_created_at}")
 
     X = build_feature_matrix(posts)
     if X.shape[0] == 0:
