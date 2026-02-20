@@ -75,7 +75,7 @@ def apply_pca(X: np.ndarray, n_components: int = 3, fit: bool = True, model_path
 
 def fetch_bluesky_posts(
     query: str,
-    limit: int = 200,
+    limit: int = 250,
     handle: str = None,
     password: str = None,
 ) -> list[dict]:

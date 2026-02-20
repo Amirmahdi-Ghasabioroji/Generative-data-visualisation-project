@@ -33,6 +33,7 @@ SYMBOLS = ['BTCUSDT', 'ETHUSDT']
 INTERVAL = "1s"
 OUTPUT_DIR = "binance_realtime"
 PCA_N_COMPONENTS = 3
+ENABLE_PCA_PLOT = True
 # Buffer size for real-time data 
 BUFFER_SIZE = 250
 
@@ -180,8 +181,14 @@ def run_pca(symbol: str, matrix: np.ndarray) -> np.ndarray | None:
         return None
 
     model = pca_models[symbol]
-    model.fit(matrix)
-    reduced = model.transform(matrix)
+    plot_title = f"{symbol} PCA 3D (rolling {matrix.shape[0]} rows)"
+
+    if ENABLE_PCA_PLOT:
+        reduced = model.fit_transform_plot_3d(matrix, title=plot_title)
+    else:
+        model.fit(matrix)
+        reduced = model.transform(matrix)
+
     return reduced[-1]
 
 
@@ -302,6 +309,7 @@ async def run_pipeline() -> None:
     print(f"  Symbols : {', '.join(SYMBOLS)}")
     print(f"  Interval: {INTERVAL}")
     print(f"  Output  : {OUTPUT_DIR}/")
+    print(f"  PCA Plot: {'ON' if ENABLE_PCA_PLOT else 'OFF'}")
     print("=" * 50)
 
     # No API key needed for public market streams
