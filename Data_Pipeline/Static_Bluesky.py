@@ -15,6 +15,58 @@ import numpy as np
 from atproto import Client
 from sentence_transformers import SentenceTransformer
 from sklearn.preprocessing import StandardScaler
+import os
+import sys
+
+# Ensure workspace root is on sys.path so AI_systems can be imported when
+# running this script directly.
+ROOT = os.path.dirname(os.path.dirname(__file__))
+if ROOT not in sys.path:
+    sys.path.append(ROOT)
+
+try:
+    from AI_systems.pca_model import PCA
+except Exception:
+    PCA = None
+
+
+def apply_pca(X: np.ndarray, n_components: int = 3, fit: bool = True, model_path: str | None = None):
+    """
+    Fit or load a PCA model and return reduced coordinates plus the PCA instance.
+
+    - X: feature matrix (n_samples, n_features)
+    - n_components: number of principal components
+    - fit: if True, fit PCA on X; if False, load components from `model_path`
+    - model_path: path to save/load PCA components (npz)
+
+    Returns: (X_reduced, pca_instance)
+    """
+    if PCA is None:
+        raise ImportError("PCA class not importable. Ensure AI_systems/pca_model.py is available.")
+
+    pca = PCA(n_components=n_components)
+    X = np.asarray(X)
+
+    if fit:
+        X_reduced = pca.fit_transform(X)
+        if model_path:
+            np.savez(model_path,
+                     mean=pca.mean_,
+                     components=pca.components_,
+                     explained_variance=pca.explained_variance_)
+        return X_reduced, pca
+
+    # load
+    if not model_path:
+        raise ValueError("model_path is required when fit=False")
+    data = np.load(model_path)
+    pca.mean_ = data["mean"]
+    pca.components_ = data["components"]
+    pca.explained_variance_ = data["explained_variance"]
+    total = np.sum(pca.explained_variance_)
+    pca.explained_variance_ratio_ = pca.explained_variance_ / total if total != 0 else None
+    X_reduced = pca.transform(X)
+    return X_reduced, pca
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -171,6 +223,9 @@ if __name__ == "__main__":
     posts = fetch_bluesky_posts(query="generative art", limit=200)
     X = build_feature_matrix(posts)
 
-    # Feed into your models:
-    # pca_coords = your_pca.transform(X)
-    # vae_output = your_vae.encode(X)
+    # Feed into your models — PCA integration helper
+    if PCA is None:
+        print("[!] PCA class not importable. Ensure AI_systems/pca_model.py is available.")
+    else:
+        pca_coords, pca_model = apply_pca(X, n_components=3, fit=True, model_path=None)
+        print(f"[✓] PCA coords shape: {pca_coords.shape}")
