@@ -207,11 +207,11 @@ class PCA:
         return X_reduced
 
 
-# ─────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────
 # STAGE 7: TEST BLOCK
 # What it does: Simple example to check that PCA works.
 # Why it matters: Quick sanity check before integrating into larger project.
-# ─────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     # Generate random dataset (100 samples, 10 features)
     X = np.random.rand(100, 10)
@@ -225,4 +225,34 @@ if __name__ == "__main__":
 
     # Print explained variance ratio for reference
     print("Explained variance ratio:", pca.explained_variance_ratio_)
+
+
+# ─────────────────────────────────────────────────────────────
+# STAGE 8: RECONSTRUCTION ERROR UPDATE
+# What it does: Computes MSE between original X and its
+# PCA reconstruction, appends to history, and redraws the line.
+# ─────────────────────────────────────────────────────────────
+    def _update_reconstruction_error(self, X_original: np.ndarray):
+        X_reduced = self.transform(X_original)
+        X_reconstructed = self.inverse_transform(X_reduced)
+        mse = float(np.mean((X_original - X_reconstructed) ** 2))
+        self._error_history.append(mse)
+    
+        ax = self._ax_error
+        ax.cla()
+        ax.set_facecolor("#111111")
+        ax.set_title("Reconstruction Error over Time", fontsize=10)
+        ax.set_xlabel("Update Step")
+        ax.set_ylabel("Mean Squared Error")
+    
+        steps = np.arange(1, len(self._error_history) + 1)
+        ax.plot(steps, self._error_history, color="#00e5ff", linewidth=1.5)
+        ax.fill_between(steps, self._error_history, alpha=0.15, color="#00e5ff")
+        ax.scatter(steps[-1], self._error_history[-1], color="white", s=40, zorder=5)
+        ax.text(
+            steps[-1], self._error_history[-1],
+            f"  {mse:.5f}", color="white", fontsize=8, va="center"
+        )
+        ax.tick_params(colors="white")
+
 
