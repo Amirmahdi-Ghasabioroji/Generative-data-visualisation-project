@@ -119,7 +119,7 @@ class PCA:
         if self._fig is None or self._ax is None:
             plt.style.use("dark_background")
             plt.ion()
-            self._fig = plt.figure(figsize=(8, 6))
+            self._fig = plt.figure(figsize=(6, 4))
             self._ax = self._fig.add_subplot(111, projection='3d')
             self._ax.set_xlabel("PC1")
             self._ax.set_ylabel("PC2")
@@ -328,7 +328,7 @@ class PCA:
     def _init_figure(self):
         plt.style.use("dark_background")
         plt.ion()
-        self._fig = plt.figure(figsize=(12, 7))
+        self._fig = plt.figure(figsize=(10, 6))
         gs = self._fig.add_gridspec(2, 2, width_ratios=[1.4, 1.0], height_ratios=[1.0, 1.0])
 
         self._ax_3d = self._fig.add_subplot(gs[:, 0], projection="3d")
