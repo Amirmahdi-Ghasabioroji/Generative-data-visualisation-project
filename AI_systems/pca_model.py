@@ -255,4 +255,111 @@ if __name__ == "__main__":
         )
         ax.tick_params(colors="white")
 
+# ─────────────────────────────────────────────────────────────
+# STAGE 9: 3D SCATTER UPDATE
+# What it does: Draws/refreshes the 3D projection scatter.
+# ─────────────────────────────────────────────────────────────
+    def _update_3d_scatter(self, X_reduced: np.ndarray, title: str, point_size: int):
+        x_vals = X_reduced[:, 0]
+        y_vals = X_reduced[:, 1]
+        z_vals = X_reduced[:, 2]
+
+        color_idx = np.linspace(0, 1, X_reduced.shape[0])
+        rgba_colors = cm.rainbow(color_idx)
+        rgba_colors[:, 3] = np.linspace(0.20, 0.95, X_reduced.shape[0])
+
+        # Update cumulative axis limits for stability
+        x_min, x_max = float(np.min(x_vals)), float(np.max(x_vals))
+        y_min, y_max = float(np.min(y_vals)), float(np.max(y_vals))
+        z_min, z_max = float(np.min(z_vals)), float(np.max(z_vals))
+
+        if self._axis_limits is None:
+            self._axis_limits = {
+                "x": [x_min, x_max],
+                "y": [y_min, y_max],
+                "z": [z_min, z_max],
+            }
+        else:
+            self._axis_limits["x"][0] = min(self._axis_limits["x"][0], x_min)
+            self._axis_limits["x"][1] = max(self._axis_limits["x"][1], x_max)
+            self._axis_limits["y"][0] = min(self._axis_limits["y"][0], y_min)
+            self._axis_limits["y"][1] = max(self._axis_limits["y"][1], y_max)
+            self._axis_limits["z"][0] = min(self._axis_limits["z"][0], z_min)
+            self._axis_limits["z"][1] = max(self._axis_limits["z"][1], z_max)
+
+        def padded(lo, hi):
+            if lo == hi:
+                return lo - 0.5, hi + 0.5
+            pad = (hi - lo) * 0.1
+            return lo - pad, hi + pad
+
+        self._ax_3d.set_xlim(*padded(*self._axis_limits["x"]))
+        self._ax_3d.set_ylim(*padded(*self._axis_limits["y"]))
+        self._ax_3d.set_zlim(*padded(*self._axis_limits["z"]))
+
+        if self._scatter is None:
+            self._scatter = self._ax_3d.scatter(
+                x_vals, y_vals, z_vals,
+                c=rgba_colors, edgecolor="none", s=point_size,
+            )
+            self._cbar = self._fig.colorbar(
+                cm.ScalarMappable(cmap="rainbow"),
+                ax=self._ax_3d, pad=0.08, fraction=0.02,
+            )
+            self._cbar.set_label("Time (old → new)", rotation=270, labelpad=14)
+        else:
+            self._scatter._offsets3d = (x_vals, y_vals, z_vals)
+            self._scatter.set_sizes(np.full(x_vals.shape[0], point_size))
+            self._scatter.set_facecolors(rgba_colors)
+
+        if self._latest_point is None:
+            self._latest_point = self._ax_3d.scatter(
+                [x_vals[-1]], [y_vals[-1]], [z_vals[-1]],
+                c="white", edgecolor="black", s=point_size * 2.5, marker="o", zorder=10,
+            )
+        else:
+            self._latest_point._offsets3d = ([x_vals[-1]], [y_vals[-1]], [z_vals[-1]])
+            self._latest_point.set_sizes(np.array([point_size * 2.5]))
+
+        self._ax_3d.set_title(title, pad=10)
+
+# ─────────────────────────────────────────────────────────────
+# STAGE 10: MAIN UNIFIED PLOT METHOD
+# What it does: Initialises the shared figure (once) and
+# refreshes all three panels in one call.
+# ─────────────────────────────────────────────────────────────
+    def plot_unified(
+        self,
+        X_original: np.ndarray,
+        X_reduced: np.ndarray,
+        title: str = "PCA: 3D Projection",
+        point_size: int = 20,
+    ):
+        if X_reduced.ndim != 2 or X_reduced.shape[1] < 3:
+            raise ValueError("X_reduced must have shape (N, 3+) for 3D plotting.")
+
+        if self._fig is None:
+            self._init_figure()
+
+        self._update_3d_scatter(X_reduced, title, point_size)
+        self._update_scree()
+        self._update_reconstruction_error(X_original)
+
+        self._fig.canvas.draw_idle()
+        plt.pause(0.001)
+        return self._fig
+
+# ─────────────────────────────────────────────────────────────
+# STAGE 11: CONVENIENCE: FIT → TRANSFORM → PLOT IN ONE CALL
+# ─────────────────────────────────────────────────────────────
+    def fit_transform_plot(
+        self,
+        X: np.ndarray,
+        title: str = "PCA: 3D Projection",
+        point_size: int = 20,
+    ):
+        X_reduced = self.fit_transform(X)
+        self.plot_unified(X, X_reduced, title=title, point_size=point_size)
+        return X_reduced
+
 
