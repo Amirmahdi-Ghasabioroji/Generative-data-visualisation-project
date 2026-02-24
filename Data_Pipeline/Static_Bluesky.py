@@ -507,7 +507,10 @@ def run_static_bluesky_pipeline(
         return None
 
     pca = PCA(n_components=n_components)
-    X_reduced = pca.fit_transform(X)
+    if show_plot and n_components >= 3:
+        X_reduced = pca.fit_transform_plot(X, title="Bluesky Static Dataset PCA (Unified)")
+    else:
+        X_reduced = pca.fit_transform(X)
     print(f"[✓] PCA reduced matrix ready: {X_reduced.shape}")
     if getattr(pca, "explained_variance_ratio_", None) is not None:
         print(f"[i] Explained variance ratio: {np.array2string(pca.explained_variance_ratio_, precision=4)}")
@@ -519,8 +522,7 @@ def run_static_bluesky_pipeline(
         try:
             import matplotlib.pyplot as plt
 
-            pca.plot_3d_scatter(X_reduced, title="Bluesky Static Dataset PCA (3D)")
-            print("[i] Showing PCA 3D plot (close the plot window to continue)...")
+            print("[i] Showing unified PCA plot (close the plot window to continue)...")
             plt.show(block=True)
         except Exception as e:
             print(f"[i] Could not display PCA plot in this environment: {e}")

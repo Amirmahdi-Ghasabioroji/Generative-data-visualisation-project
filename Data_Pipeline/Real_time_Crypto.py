@@ -184,7 +184,7 @@ def run_pca(symbol: str, matrix: np.ndarray) -> np.ndarray | None:
     plot_title = f"{symbol} PCA 3D (rolling {matrix.shape[0]} rows)"
 
     if ENABLE_PCA_PLOT:
-        reduced = model.fit_transform_plot_3d(matrix, title=plot_title)
+        reduced = model.fit_transform_plot(matrix, title=plot_title)
     else:
         model.fit(matrix)
         reduced = model.transform(matrix)

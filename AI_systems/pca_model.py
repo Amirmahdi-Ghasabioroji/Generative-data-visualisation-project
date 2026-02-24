@@ -29,10 +29,14 @@ class PCA:
         self.explained_variance_ratio_ = None
         self._fig = None
         self._ax = None
+        self._ax_3d = None
+        self._ax_scree = None
+        self._ax_error = None
         self._scatter = None
         self._latest_point = None
         self._cbar = None
         self._axis_limits = None
+        self._error_history = []
 
     # ─────────────────────────────────────────────────────────────
     # STAGE 2: FIT METHOD
@@ -206,45 +210,24 @@ class PCA:
         self.plot_3d_scatter(X_reduced, title=title)
         return X_reduced
 
-
-# ────────────────────────────────────────────────────────────
-# STAGE 7: TEST BLOCK
-# What it does: Simple example to check that PCA works.
-# Why it matters: Quick sanity check before integrating into larger project.
-# ────────────────────────────────────────────────────────────
-if __name__ == "__main__":
-    # Generate random dataset (100 samples, 10 features)
-    X = np.random.rand(100, 10)
-
-    # Create PCA instance to reduce to 3 components
-    pca = PCA(n_components=3)
-
-    # Fit, reduce and plot in one call
-    X_reduced = pca.fit_transform_plot_3d(X, title="PCA: 3D Projection of Random Data")
-    plt.show()
-
-    # Print explained variance ratio for reference
-    print("Explained variance ratio:", pca.explained_variance_ratio_)
-
-
-# ─────────────────────────────────────────────────────────────
-# STAGE 8: RECONSTRUCTION ERROR UPDATE
-# What it does: Computes MSE between original X and its
-# PCA reconstruction, appends to history, and redraws the line.
-# ─────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────
+    # STAGE 8: RECONSTRUCTION ERROR UPDATE
+    # What it does: Computes MSE between original X and its
+    # PCA reconstruction, appends to history, and redraws the line.
+    # ─────────────────────────────────────────────────────────────
     def _update_reconstruction_error(self, X_original: np.ndarray):
         X_reduced = self.transform(X_original)
         X_reconstructed = self.inverse_transform(X_reduced)
         mse = float(np.mean((X_original - X_reconstructed) ** 2))
         self._error_history.append(mse)
-    
+
         ax = self._ax_error
         ax.cla()
         ax.set_facecolor("#111111")
         ax.set_title("Reconstruction Error over Time", fontsize=10)
         ax.set_xlabel("Update Step")
         ax.set_ylabel("Mean Squared Error")
-    
+
         steps = np.arange(1, len(self._error_history) + 1)
         ax.plot(steps, self._error_history, color="#00e5ff", linewidth=1.5)
         ax.fill_between(steps, self._error_history, alpha=0.15, color="#00e5ff")
@@ -255,10 +238,10 @@ if __name__ == "__main__":
         )
         ax.tick_params(colors="white")
 
-# ─────────────────────────────────────────────────────────────
-# STAGE 9: 3D SCATTER UPDATE
-# What it does: Draws/refreshes the 3D projection scatter.
-# ─────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────
+    # STAGE 9: 3D SCATTER UPDATE
+    # What it does: Draws/refreshes the 3D projection scatter.
+    # ─────────────────────────────────────────────────────────────
     def _update_3d_scatter(self, X_reduced: np.ndarray, title: str, point_size: int):
         x_vals = X_reduced[:, 0]
         y_vals = X_reduced[:, 1]
@@ -268,7 +251,6 @@ if __name__ == "__main__":
         rgba_colors = cm.rainbow(color_idx)
         rgba_colors[:, 3] = np.linspace(0.20, 0.95, X_reduced.shape[0])
 
-        # Update cumulative axis limits for stability
         x_min, x_max = float(np.min(x_vals)), float(np.max(x_vals))
         y_min, y_max = float(np.min(y_vals)), float(np.max(y_vals))
         z_min, z_max = float(np.min(z_vals)), float(np.max(z_vals))
@@ -323,11 +305,46 @@ if __name__ == "__main__":
 
         self._ax_3d.set_title(title, pad=10)
 
-# ─────────────────────────────────────────────────────────────
-# STAGE 10: MAIN UNIFIED PLOT METHOD
-# What it does: Initialises the shared figure (once) and
-# refreshes all three panels in one call.
-# ─────────────────────────────────────────────────────────────
+    def _update_scree(self):
+        ax = self._ax_scree
+        ax.cla()
+        ax.set_facecolor("#111111")
+        ax.set_title("Explained Variance", fontsize=10)
+        ax.set_xlabel("Principal Component")
+        ax.set_ylabel("Ratio")
+
+        if self.explained_variance_ratio_ is None:
+            ax.text(0.5, 0.5, "Fit PCA first", ha="center", va="center", color="white")
+            ax.set_xticks([])
+            return
+
+        ratios = self.explained_variance_ratio_
+        indices = np.arange(1, len(ratios) + 1)
+        ax.bar(indices, ratios, color="#4ea1ff", alpha=0.85)
+        ax.plot(indices, np.cumsum(ratios), color="#ffd166", linewidth=1.5, marker="o", markersize=3)
+        ax.set_xticks(indices)
+        ax.tick_params(colors="white")
+
+    def _init_figure(self):
+        plt.style.use("dark_background")
+        plt.ion()
+        self._fig = plt.figure(figsize=(12, 7))
+        gs = self._fig.add_gridspec(2, 2, width_ratios=[1.4, 1.0], height_ratios=[1.0, 1.0])
+
+        self._ax_3d = self._fig.add_subplot(gs[:, 0], projection="3d")
+        self._ax_3d.set_xlabel("PC1")
+        self._ax_3d.set_ylabel("PC2")
+        self._ax_3d.set_zlabel("PC3")
+        self._ax_3d.grid(alpha=0.25)
+
+        self._ax_scree = self._fig.add_subplot(gs[0, 1])
+        self._ax_error = self._fig.add_subplot(gs[1, 1])
+
+    # ─────────────────────────────────────────────────────────────
+    # STAGE 10: MAIN UNIFIED PLOT METHOD
+    # What it does: Initialises the shared figure (once) and
+    # refreshes all three panels in one call.
+    # ─────────────────────────────────────────────────────────────
     def plot_unified(
         self,
         X_original: np.ndarray,
@@ -338,7 +355,7 @@ if __name__ == "__main__":
         if X_reduced.ndim != 2 or X_reduced.shape[1] < 3:
             raise ValueError("X_reduced must have shape (N, 3+) for 3D plotting.")
 
-        if self._fig is None:
+        if self._fig is None or self._ax_3d is None:
             self._init_figure()
 
         self._update_3d_scatter(X_reduced, title, point_size)
@@ -349,9 +366,9 @@ if __name__ == "__main__":
         plt.pause(0.001)
         return self._fig
 
-# ─────────────────────────────────────────────────────────────
-# STAGE 11: CONVENIENCE: FIT → TRANSFORM → PLOT IN ONE CALL
-# ─────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────
+    # STAGE 11: CONVENIENCE: FIT → TRANSFORM → PLOT IN ONE CALL
+    # ─────────────────────────────────────────────────────────────
     def fit_transform_plot(
         self,
         X: np.ndarray,
@@ -361,5 +378,25 @@ if __name__ == "__main__":
         X_reduced = self.fit_transform(X)
         self.plot_unified(X, X_reduced, title=title, point_size=point_size)
         return X_reduced
+
+
+# ────────────────────────────────────────────────────────────
+# STAGE 7: TEST BLOCK
+# What it does: Simple example to check that PCA works.
+# Why it matters: Quick sanity check before integrating into larger project.
+# ────────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    # Generate random dataset (100 samples, 10 features)
+    X = np.random.rand(100, 10)
+
+    # Create PCA instance to reduce to 3 components
+    pca = PCA(n_components=3)
+
+    # Fit, reduce and plot in one call
+    X_reduced = pca.fit_transform_plot_3d(X, title="PCA: 3D Projection of Random Data")
+    plt.show()
+
+    # Print explained variance ratio for reference
+    print("Explained variance ratio:", pca.explained_variance_ratio_)
 
 
