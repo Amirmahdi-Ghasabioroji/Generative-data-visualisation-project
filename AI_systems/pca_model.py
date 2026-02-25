@@ -234,9 +234,9 @@ class PCA:
         ax = self._ax_error
         ax.cla()
         ax.set_facecolor("#111111")
-        ax.set_title("Reconstruction Error over Time", fontsize=10)
-        ax.set_xlabel("Update Step")
-        ax.set_ylabel("Mean Squared Error")
+        ax.set_title("Reconstruction Error over Time", fontsize=11, color="white", pad=8)
+        ax.set_xlabel("Update Step", fontsize=10, color="white", labelpad=6)
+        ax.set_ylabel("MSE", fontsize=10, color="white", labelpad=6)
 
         steps = np.arange(1, len(self._error_history) + 1)
         ax.plot(steps, self._error_history, color="#00e5ff", linewidth=1.5)
@@ -244,9 +244,15 @@ class PCA:
         ax.scatter(steps[-1], self._error_history[-1], color="white", s=40, zorder=5)
         ax.text(
             steps[-1], self._error_history[-1],
-            f"  {mse:.5f}", color="white", fontsize=8, va="center"
+            f"  {mse:.5f}", color="white", fontsize=9, va="center"
         )
-        ax.tick_params(colors="white")
+
+        # Force integer x-axis ticks — prevents float step labels like 0.96, 1.02
+        ax.set_xticks(steps)
+        ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: str(int(v))))
+        ax.tick_params(colors="white", labelsize=9)
+        for spine in ax.spines.values():
+            spine.set_edgecolor("#444444")
 
     # ─────────────────────────────────────────────────────────────
     # STAGE 9: 3D SCATTER UPDATE
@@ -266,11 +272,7 @@ class PCA:
         z_min, z_max = float(np.min(z_vals)), float(np.max(z_vals))
 
         if self._axis_limits is None:
-            self._axis_limits = {
-                "x": [x_min, x_max],
-                "y": [y_min, y_max],
-                "z": [z_min, z_max],
-            }
+            self._axis_limits = {"x": [x_min, x_max], "y": [y_min, y_max], "z": [z_min, z_max]}
         else:
             self._axis_limits["x"][0] = min(self._axis_limits["x"][0], x_min)
             self._axis_limits["x"][1] = max(self._axis_limits["x"][1], x_max)
@@ -289,6 +291,12 @@ class PCA:
         self._ax_3d.set_ylim(*padded(*self._axis_limits["y"]))
         self._ax_3d.set_zlim(*padded(*self._axis_limits["z"]))
 
+        # Ensure axis labels and ticks are clearly white
+        for label in [self._ax_3d.xaxis.label, self._ax_3d.yaxis.label, self._ax_3d.zaxis.label]:
+            label.set_color("white")
+            label.set_fontsize(10)
+        self._ax_3d.tick_params(colors="white", labelsize=8)
+
         if self._scatter is None:
             self._scatter = self._ax_3d.scatter(
                 x_vals, y_vals, z_vals,
@@ -299,6 +307,7 @@ class PCA:
             self._scatter.set_sizes(np.full(x_vals.shape[0], point_size))
             self._scatter.set_facecolors(rgba_colors)
 
+        # Colorbar — extra padding so it never overlaps the 3D axes
         if self._view_cbar_mode != "3d":
             if self._view_cbar is not None:
                 try:
@@ -307,9 +316,13 @@ class PCA:
                     pass
             self._view_cbar = self._fig.colorbar(
                 cm.ScalarMappable(cmap="rainbow"),
-                ax=self._ax_3d, pad=0.08, fraction=0.02,
+                ax=self._ax_3d,
+                pad=0.18,
+                fraction=0.022,
+                shrink=0.55,
             )
-            self._view_cbar.set_label("Time (old → new)", rotation=270, labelpad=14)
+            self._view_cbar.set_label("Time (old → new)", rotation=270, labelpad=16, color="white", fontsize=9)
+            self._view_cbar.ax.tick_params(colors="white", labelsize=8)
             self._view_cbar_mode = "3d"
 
         if self._latest_point is None:
@@ -321,7 +334,7 @@ class PCA:
             self._latest_point._offsets3d = ([x_vals[-1]], [y_vals[-1]], [z_vals[-1]])
             self._latest_point.set_sizes(np.array([point_size * 2.5]))
 
-        self._ax_3d.set_title(title, pad=10)
+        self._ax_3d.set_title(title, pad=12, fontsize=12, color="white")
 
     def _update_2d_hexbin(self, X_reduced: np.ndarray, title: str):
         x_vals = X_reduced[:, 0]
@@ -331,26 +344,13 @@ class PCA:
         ax.cla()
         ax.set_facecolor("#111111")
         ax.grid(alpha=0.25)
-        ax.set_xlabel("PC1")
-        ax.set_ylabel("PC2")
-        ax.set_title(f"{title} (2D Density Hexbin)", pad=10)
+        ax.set_xlabel("PC1", fontsize=10, color="white")
+        ax.set_ylabel("PC2", fontsize=10, color="white")
+        ax.set_title(f"{title} — 2D Density", pad=10, fontsize=11, color="white")
+        ax.tick_params(colors="white", labelsize=8)
 
-        hb = ax.hexbin(
-            x_vals,
-            y_vals,
-            gridsize=35,
-            mincnt=1,
-            cmap="viridis",
-        )
-
-        ax.scatter(
-            [x_vals[-1]],
-            [y_vals[-1]],
-            c="white",
-            edgecolor="black",
-            s=45,
-            zorder=10,
-        )
+        hb = ax.hexbin(x_vals, y_vals, gridsize=35, mincnt=1, cmap="viridis")
+        ax.scatter([x_vals[-1]], [y_vals[-1]], c="white", edgecolor="black", s=45, zorder=10)
 
         if self._view_cbar_mode != "2d":
             if self._view_cbar is not None:
@@ -359,7 +359,8 @@ class PCA:
                 except Exception:
                     pass
             self._view_cbar = self._fig.colorbar(hb, ax=ax, pad=0.02, fraction=0.04)
-            self._view_cbar.set_label("Points per bin")
+            self._view_cbar.set_label("Points per bin", color="white", fontsize=9)
+            self._view_cbar.ax.tick_params(colors="white", labelsize=8)
             self._view_cbar_mode = "2d"
         else:
             self._view_cbar.update_normal(hb)
@@ -368,9 +369,12 @@ class PCA:
         ax = self._ax_scree
         ax.cla()
         ax.set_facecolor("#111111")
-        ax.set_title("Explained Variance", fontsize=10)
-        ax.set_xlabel("Principal Component")
-        ax.set_ylabel("Ratio")
+        ax.set_title("Explained Variance", fontsize=11, color="white", pad=8)
+        ax.set_xlabel("Principal Component", fontsize=10, color="white", labelpad=6)
+        ax.set_ylabel("Variance Ratio", fontsize=10, color="white", labelpad=6)
+        ax.tick_params(colors="white", labelsize=9)
+        for spine in ax.spines.values():
+            spine.set_edgecolor("#444444")
 
         if self.explained_variance_ratio_ is None:
             ax.text(0.5, 0.5, "Fit PCA first", ha="center", va="center", color="white")
@@ -379,21 +383,44 @@ class PCA:
 
         ratios = self.explained_variance_ratio_
         indices = np.arange(1, len(ratios) + 1)
-        ax.bar(indices, ratios, color="#4ea1ff", alpha=0.85)
-        ax.plot(indices, np.cumsum(ratios), color="#ffd166", linewidth=1.5, marker="o", markersize=3)
+
+        bars = ax.bar(indices, ratios, color="#4ea1ff", alpha=0.85, width=0.5)
+        ax.plot(indices, np.cumsum(ratios), color="#ffd166", linewidth=1.5, marker="o", markersize=4)
+
+        # Bar value labels — clear gap above each bar
+        for bar, ratio in zip(bars, ratios):
+            ax.text(
+                bar.get_x() + bar.get_width() / 2,
+                bar.get_height() + 0.008,
+                f"{ratio*100:.1f}%",
+                ha="center", va="bottom", fontsize=8, color="white"
+            )
+
         ax.set_xticks(indices)
-        ax.tick_params(colors="white")
+        ax.set_xticklabels([f"PC{i}" for i in indices], fontsize=9, color="white")
+        ax.set_ylim(0, min(1.05, ratios.max() * 1.45))
 
     def _init_figure(self):
         plt.style.use("dark_background")
         plt.ion()
-        self._fig = plt.figure(figsize=(10, 6))
-        gs = self._fig.add_gridspec(2, 2, width_ratios=[1.4, 1.0], height_ratios=[1.0, 1.0])
+
+        self._fig = plt.figure(figsize=(12, 7))
+        self._fig.patch.set_facecolor("#0d0d0d")
+
+        gs = self._fig.add_gridspec(
+            2, 2,
+            width_ratios=[1.5, 1.0],
+            height_ratios=[1.0, 1.0],
+            left=0.05, right=0.95,
+            top=0.88, bottom=0.08,
+            hspace=0.52,
+            wspace=0.38,
+        )
 
         self._ax_3d = self._fig.add_subplot(gs[:, 0], projection="3d")
-        self._ax_3d.set_xlabel("PC1")
-        self._ax_3d.set_ylabel("PC2")
-        self._ax_3d.set_zlabel("PC3")
+        self._ax_3d.set_xlabel("PC1", fontsize=10)
+        self._ax_3d.set_ylabel("PC2", fontsize=10)
+        self._ax_3d.set_zlabel("PC3", fontsize=10)
         self._ax_3d.grid(alpha=0.25)
 
         self._ax_2d = self._fig.add_subplot(gs[:, 0])
@@ -402,8 +429,17 @@ class PCA:
         self._ax_scree = self._fig.add_subplot(gs[0, 1])
         self._ax_error = self._fig.add_subplot(gs[1, 1])
 
-        self._toggle_button_ax = self._fig.add_axes([0.315, 0.92, 0.12, 0.055])
-        self._toggle_button = Button(self._toggle_button_ax, "Switch to 2D")
+        # ── Toggle button — bright blue, bold white text, easy to read ──
+        self._toggle_button_ax = self._fig.add_axes([0.43, 0.915, 0.14, 0.058])
+        self._toggle_button = Button(
+            self._toggle_button_ax,
+            "Switch to 2D",
+            color="#2979ff",
+            hovercolor="#5c9eff",
+        )
+        self._toggle_button.label.set_color("white")
+        self._toggle_button.label.set_fontsize(11)
+        self._toggle_button.label.set_fontweight("bold")
         self._toggle_button.on_clicked(self._toggle_projection)
 
     def _apply_view_mode(self):
