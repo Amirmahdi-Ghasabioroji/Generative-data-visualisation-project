@@ -17,12 +17,16 @@ from atproto import Client
 
 # CONFIG
 QUERY = "bitcoin OR btc"
+EXTRA_QUERY_TERMS = ["#bitcoin", "#btc", "crypto"]
+SEARCH_LANGUAGE = "en"
 TARGET_POSTS = 100000
 START_DATE = datetime(2024, 1, 1, tzinfo=timezone.utc)
 END_DATE = datetime(2024, 9, 30, 23, 59, 59, 999999, tzinfo=timezone.utc)
 SAVE_EVERY = 1000
 OUTPUT_FILE = "bitcoin_bluesky_jan2024_sep2024.json"
 BATCH_LIMIT = 100  # Max posts per API call
+WINDOW_DAYS = 30
+MAX_CONSECUTIVE_ERRORS_PER_TERM = 3
 
 def get_credentials():
     handle = (os.getenv("BLUESKY_HANDLE") or "").strip()
@@ -129,11 +133,25 @@ def _format_timestamp(created_at) -> str:
     return dt.isoformat().replace("+00:00", "Z")
 
 
-def _build_query(base_query: str) -> str:
-    since = START_DATE.date().isoformat()
-    # day-after END_DATE for inclusive upper bound in query language
-    until = (END_DATE.date() + timedelta(days=1)).isoformat()
-    return f"({base_query}) since:{since} until:{until}"
+def _build_query(base_query: str, since_date, until_date_exclusive) -> str:
+    since = since_date.isoformat()
+    until = until_date_exclusive.isoformat()
+    return f"({base_query}) lang:{SEARCH_LANGUAGE} since:{since} until:{until}"
+
+
+def _build_time_slices(start_dt: datetime, end_dt: datetime, window_days: int = WINDOW_DAYS) -> list[tuple]:
+    slices: list[tuple] = []
+
+    start_date = start_dt.date()
+    end_exclusive = end_dt.date() + timedelta(days=1)
+
+    current_end = end_exclusive
+    while current_end > start_date:
+        current_start = max(start_date, current_end - timedelta(days=window_days))
+        slices.append((current_start, current_end))
+        current_end = current_start
+
+    return slices
 
 
 def _build_query_terms(base_query: str) -> list[str]:
@@ -155,7 +173,25 @@ def _build_query_terms(base_query: str) -> list[str]:
             seen.add(term)
             unique.append(term)
 
+    for term in EXTRA_QUERY_TERMS:
+        term = (term or "").strip()
+        if term and term not in seen:
+            seen.add(term)
+            unique.append(term)
+
     return unique
+
+
+def _is_english_post(record) -> bool:
+    langs = _get_any(record, ["langs", "languages"], None)
+    if not langs:
+        return False
+
+    if isinstance(langs, str):
+        langs = [langs]
+
+    normalized = [str(lang).strip().lower() for lang in langs if str(lang).strip()]
+    return any(lang == "en" or lang.startswith("en-") for lang in normalized)
 
 
 def _init_stats() -> dict[str, int]:
@@ -164,6 +200,7 @@ def _init_stats() -> dict[str, int]:
         "kept": 0,
         "dropped_duplicate": 0,
         "dropped_missing_text": 0,
+        "dropped_non_english": 0,
         "dropped_date": 0,
     }
 
@@ -174,6 +211,7 @@ def _print_stats(stats: dict[str, int]):
         f"seen={stats['seen']} kept={stats['kept']} "
         f"drop_duplicate={stats['dropped_duplicate']} "
         f"drop_missing_text={stats['dropped_missing_text']} "
+        f"drop_non_english={stats['dropped_non_english']} "
         f"drop_date={stats['dropped_date']}"
     )
 
@@ -266,7 +304,12 @@ def _get_follower_count(client: Client, actor: str, cache: dict[str, int]) -> in
         cache[actor] = None
         return None
 
-def clean_post(post, client: Client, follower_cache: dict[str, int], stats: dict[str, int]):
+def clean_post(
+    post,
+    client: Client,
+    follower_cache: dict[str, int],
+    stats: dict[str, int],
+):
     """
     Takes a post object/dict and returns cleaned post.
     """
@@ -280,6 +323,10 @@ def clean_post(post, client: Client, follower_cache: dict[str, int], stats: dict
 
         if not text:
             stats["dropped_missing_text"] += 1
+            return None
+
+        if not _is_english_post(record):
+            stats["dropped_non_english"] += 1
             return None
 
         if not is_within_date(created_at_raw):
@@ -337,77 +384,113 @@ def fetch_posts():
 
     print(f"[i] Query terms: {query_terms}")
     print(f"[i] Date filter window: {START_DATE.isoformat()} to {END_DATE.isoformat()}")
+    time_slices = _build_time_slices(START_DATE, END_DATE)
+    print(f"[i] Time slices: {len(time_slices)} windows of ~{WINDOW_DAYS} days")
 
-    for term in query_terms:
+    for since_date, until_date_exclusive in time_slices:
         if len(collected) >= TARGET_POSTS:
             break
 
-        search_query = _build_query(term)
-        cursor = None
-        use_raw_search = False
-        print(f"[i] Starting term query: {search_query}")
+        print(f"[i] Window: since:{since_date.isoformat()} until:{until_date_exclusive.isoformat()}")
+        for term in query_terms:
+            if len(collected) >= TARGET_POSTS:
+                break
 
-        while len(collected) < TARGET_POSTS:
-            try:
-                if use_raw_search:
-                    response = _search_posts_raw(
-                        client=client,
-                        query=search_query,
-                        limit=BATCH_LIMIT,
-                        cursor=cursor,
-                        sort="latest",
-                    )
-                else:
-                    response = client.app.bsky.feed.search_posts(
-                        params={
-                            "q": search_query,
-                            "limit": BATCH_LIMIT,
-                            "cursor": cursor,
-                            "sort": "latest",
-                        }
-                    )
+            search_term = term
+            hashtag_fallback_used = False
+            search_query = _build_query(search_term, since_date, until_date_exclusive)
+            cursor = None
+            use_raw_search = False
+            consecutive_errors = 0
+            print(f"[i] Starting term query: {search_query}")
 
-                posts = _get_any(response, ["posts", "data", "results"], []) or []
-                if not posts:
-                    print(f"[i] No more posts for term '{term}'.")
-                    break
+            while len(collected) < TARGET_POSTS:
+                try:
+                    if use_raw_search:
+                        response = _search_posts_raw(
+                            client=client,
+                            query=search_query,
+                            limit=BATCH_LIMIT,
+                            cursor=cursor,
+                            sort="latest",
+                        )
+                    else:
+                        response = client.app.bsky.feed.search_posts(
+                            params={
+                                "q": search_query,
+                                "limit": BATCH_LIMIT,
+                                "cursor": cursor,
+                                "sort": "latest",
+                            }
+                        )
 
-                for post in posts:
-                    cleaned = clean_post(post, client=client, follower_cache=follower_cache, stats=stats)
-                    if not cleaned:
-                        continue
+                    posts = _get_any(response, ["posts", "data", "results"], []) or []
+                    if not posts:
+                        print(f"[i] No more posts for term '{term}' in this window.")
+                        break
 
-                    uri = cleaned.get("uri", "")
-                    if uri and uri in seen_uris:
-                        stats["dropped_duplicate"] += 1
-                        continue
+                    for post in posts:
+                        cleaned = clean_post(post, client=client, follower_cache=follower_cache, stats=stats)
+                        if not cleaned:
+                            continue
 
-                    if uri:
-                        seen_uris.add(uri)
-                    collected.append(cleaned)
+                        uri = cleaned.get("uri", "")
+                        if uri and uri in seen_uris:
+                            stats["dropped_duplicate"] += 1
+                            continue
 
-                cursor = _get_any(response, ["cursor", "next", "cursor_str"], None)
-                print(f"[+] Collected {len(collected)} posts")
-                _print_stats(stats)
+                        if uri:
+                            seen_uris.add(uri)
+                        collected.append(cleaned)
 
-                if len(collected) >= next_save_at:
-                    save_json(collected)
-                    print(f"[✓] Auto-saved at {len(collected)} posts")
-                    next_save_at += SAVE_EVERY
+                    cursor = _get_any(response, ["cursor", "next", "cursor_str"], None)
+                    print(f"[+] Collected {len(collected)} posts")
+                    _print_stats(stats)
 
-                if not cursor:
-                    print(f"[i] Reached end of available posts for term '{term}'.")
-                    break
+                    if len(collected) >= next_save_at:
+                        save_json(collected)
+                        print(f"[✓] Auto-saved at {len(collected)} posts")
+                        next_save_at += SAVE_EVERY
 
-                time.sleep(0.7)
+                    if not cursor:
+                        print(f"[i] Reached end of available posts for term '{term}' in this window.")
+                        break
 
-            except Exception as e:
-                print(f"[!] Error: {e}")
-                if not use_raw_search and "validation error for Response" in str(e):
-                    print("[i] Switching to raw API mode due to atproto response validation mismatch.")
-                    use_raw_search = True
-                time.sleep(5)
-                continue
+                    time.sleep(0.7)
+
+                except Exception as e:
+                    print(f"[!] Error: {e}")
+                    consecutive_errors += 1
+                    if not use_raw_search and "validation error for Response" in str(e):
+                        print("[i] Switching to raw API mode due to atproto response validation mismatch.")
+                        use_raw_search = True
+                        consecutive_errors = 0
+
+                    if (
+                        consecutive_errors >= MAX_CONSECUTIVE_ERRORS_PER_TERM
+                        and search_term.startswith("#")
+                        and not hashtag_fallback_used
+                    ):
+                        fallback_term = search_term[1:].strip()
+                        if fallback_term:
+                            print(f"[i] Term '{search_term}' kept failing; retrying as '{fallback_term}'.")
+                            search_term = fallback_term
+                            search_query = _build_query(search_term, since_date, until_date_exclusive)
+                            cursor = None
+                            use_raw_search = False
+                            consecutive_errors = 0
+                            hashtag_fallback_used = True
+                            continue
+
+                    if consecutive_errors >= MAX_CONSECUTIVE_ERRORS_PER_TERM:
+                        print(
+                            f"[i] Skipping term '{search_term}' in this window after "
+                            f"{MAX_CONSECUTIVE_ERRORS_PER_TERM} consecutive errors."
+                        )
+                        break
+
+                    time.sleep(5)
+                    continue
 
     save_json(collected)
     _print_stats(stats)
