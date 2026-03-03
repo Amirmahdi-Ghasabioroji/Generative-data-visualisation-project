@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-02-25T16:25:15",
+  "timestamp": "2026-03-03T16:42:48",
   "query": "generative art",
   "num_posts": 300,
   "feature_shape": [
@@ -11,8 +11,8 @@
     3
   ],
   "artifacts": {
-    "posts_csv": "d:\\QMUL\\AI project\\Generative-data-visualisation-project\\Data_Pipeline\\datasets\\bluesky_static\\posts.csv",
-    "features_npy": "d:\\QMUL\\AI project\\Generative-data-visualisation-project\\Data_Pipeline\\datasets\\bluesky_static\\features.npy",
-    "pca_3d_npy": "d:\\QMUL\\AI project\\Generative-data-visualisation-project\\Data_Pipeline\\datasets\\bluesky_static\\pca_3d.npy"
+    "posts_csv": "C:\\Users\\basal\\OneDrive\\Desktop\\QMUL Acadamics\\year2\\Term2\\ECS537U\\Generative-data-visualisation-project\\Data_Pipeline\\datasets\\bluesky_static\\posts.csv",
+    "features_npy": "C:\\Users\\basal\\OneDrive\\Desktop\\QMUL Acadamics\\year2\\Term2\\ECS537U\\Generative-data-visualisation-project\\Data_Pipeline\\datasets\\bluesky_static\\features.npy",
+    "pca_3d_npy": "C:\\Users\\basal\\OneDrive\\Desktop\\QMUL Acadamics\\year2\\Term2\\ECS537U\\Generative-data-visualisation-project\\Data_Pipeline\\datasets\\bluesky_static\\pca_3d.npy"
   }
 }
