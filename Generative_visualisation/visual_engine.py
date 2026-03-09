@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
 from matplotlib import cm
 from typing import Optional
 
@@ -36,9 +37,13 @@ class VisualEngine:
         self.positions = None
         self.velocities = None
         self.colors = None
+        self.phase_offsets = None   # per-particle fixed colour phase seed
+
+        self.starfield_scatter = None  # static background star field
+        self.glow_patch = None         # soft central glow
 
         self.frame_idx = 0
-        self.smoothing_alpha = 0.22
+        self.smoothing_alpha = 0.17
         self.tick_interval_ms = 24
         self.current_params = {
             "motion_intensity": 0.5,
@@ -146,6 +151,23 @@ class VisualEngine:
         self.anim_timer.add_callback(self._tick)
         self.anim_timer.start()
 
+        # Static background star field — never moves, creates depth
+        rng = np.random.default_rng(42)
+        star_x = rng.uniform(-1.25, 1.25, 90).astype(np.float32)
+        star_y = rng.uniform(-1.25, 1.25, 90).astype(np.float32)
+        star_s = rng.uniform(1.2, 5.5, 90).astype(np.float32)
+        star_a = rng.uniform(0.18, 0.45, 90).astype(np.float32)
+        star_colors = np.ones((90, 4), dtype=np.float32)
+        star_colors[:, 3] = star_a
+        self.starfield_scatter = self.ax.scatter(
+            star_x, star_y, s=star_s, c=star_colors, edgecolors="none", zorder=1
+        )
+
+        # Soft central glow using a radial gradient via stacked transparent circles
+        for r, a in [(0.20, 0.03), (0.12, 0.05), (0.06, 0.07)]:
+            glow = mpatches.Circle((0, 0), r, color="#e8c87a", alpha=a, zorder=3, linewidth=0)
+            self.ax.add_patch(glow)
+
     def _build_interpretation_panel(self) -> str:
         return (
             "Market interpretation\n"
@@ -246,6 +268,8 @@ class VisualEngine:
         jitter = np.random.normal(0.0, 0.0016, size=(n_particles, 2))
         self.velocities = (vxvy + jitter).astype(np.float32)
 
+        # Each particle gets a fixed phase seed so colour ripples across the cloud
+        self.phase_offsets = np.random.uniform(0.0, 1.0, size=n_particles).astype(np.float32)
         self.colors = cm.twilight(np.linspace(0, 1, n_particles))
 
     def _sample_galaxy_positions(self, n_particles: int) -> np.ndarray:
@@ -283,6 +307,8 @@ class VisualEngine:
             self.positions = self.positions[keep_idx]
             self.velocities = self.velocities[keep_idx]
             self.colors = self.colors[keep_idx]
+            if self.phase_offsets is not None:
+                self.phase_offsets = self.phase_offsets[keep_idx]
             return
 
         add = n_particles - current
@@ -294,10 +320,15 @@ class VisualEngine:
         new_vel = (tangential * speed[:, None] + np.random.normal(0.0, 0.0016, size=(add, 2))).astype(np.float32)
 
         new_colors = cm.twilight(np.random.uniform(0.0, 1.0, size=add))
+        new_offsets = np.random.uniform(0.0, 1.0, size=add).astype(np.float32)
 
         self.positions = np.vstack([self.positions, new_pos])
         self.velocities = np.vstack([self.velocities, new_vel])
         self.colors = np.vstack([self.colors, new_colors])
+        if self.phase_offsets is not None:
+            self.phase_offsets = np.concatenate([self.phase_offsets, new_offsets])
+        else:
+            self.phase_offsets = new_offsets
 
     def render(self, params: dict[str, float], regime_info: dict | None = None):
         self._ensure_plot()
@@ -381,7 +412,11 @@ class VisualEngine:
         noise_term = np.random.normal(0.0, noise_amp, size=self.positions.shape)
 
         self.velocities = (
-            0.93 * self.velocities
+            np.where(
+                (radius / 1.25)[:, None] < 0.4,
+                0.908 * self.velocities,   # inner core: tighter spin
+                0.948 * self.velocities,   # outer arms: looser trail
+            )
             + speed * drift
             + swirl_strength * tangential
             + core_pull_strength[:, None] * radial_inward
@@ -397,17 +432,29 @@ class VisualEngine:
 
         radius_now = np.linalg.norm(self.positions, axis=1)
         warm_bias = np.clip(1.0 - radius_now / 1.25, 0.0, 1.0)
-        phase = (0.25 * np.linspace(0, 1, n_particles) + 0.75 * warm_bias + self.frame_idx * (0.0006 + 0.012 * color_dyn)) % 1.0
+        # Per-particle phase offset makes colour ripple across cloud rather than pulsing in unison
+        offsets = self.phase_offsets if self.phase_offsets is not None else 0.0
+        phase = (offsets + 0.75 * warm_bias + self.frame_idx * (0.0006 + 0.012 * color_dyn)) % 1.0
         self.colors = cm.magma(phase)
 
         # Strengthen colour intensity (vivid highlights while preserving palette ordering)
         self.colors[:, :3] = np.clip(self.colors[:, :3] ** 0.82, 0.0, 1.0)
 
         core_emphasis = np.clip(1.0 - radius_now / 1.25, 0.0, 1.0)
-        sizes = 6.0 + 18.0 * density + 6.0 * motion + 20.0 * core_emphasis + 19.0 * flash_t
-        alpha = 0.22 + 0.62 * (0.55 * density + 0.45 * color_dyn)
-        base_alpha = np.clip(alpha * (0.72 + 0.55 * core_emphasis), 0.20, 1.0)
-        self.colors[:, 3] = np.clip(base_alpha + 0.25 * flash_t, 0.20, 1.0)
+
+        # Per-particle size and brightness driven by velocity magnitude.
+        # Fast particles (energised by volatile BTC moments) are larger and brighter;
+        # slow drifting particles in calm regimes stay small and dim.
+        vel_mag = np.linalg.norm(self.velocities, axis=1)
+        expected_max = 0.0007 + motion * 0.0062 + 2e-4  # rough expected ceiling
+        vel_norm = np.clip(vel_mag / (expected_max + 1e-8), 0.0, 1.0)
+
+        base_size = 3.5 + 14.0 * density + 5.0 * motion + 16.0 * core_emphasis + 16.0 * flash_t
+        sizes = base_size * (0.55 + 0.95 * vel_norm)  # per-particle: 0.55x–1.5x base
+
+        alpha_base = 0.18 + 0.55 * (0.55 * density + 0.45 * color_dyn)
+        per_alpha = alpha_base * (0.60 + 0.65 * core_emphasis) + 0.28 * vel_norm
+        self.colors[:, 3] = np.clip(per_alpha + 0.25 * flash_t, 0.15, 1.0)
 
         if self.scatter is None:
             self.scatter = self.ax.scatter(
@@ -420,7 +467,7 @@ class VisualEngine:
             )
         else:
             self.scatter.set_offsets(self.positions)
-            self.scatter.set_sizes(np.full(n_particles, sizes))
+            self.scatter.set_sizes(sizes)
             self.scatter.set_facecolors(self.colors)
 
         if self.info_text is not None:
