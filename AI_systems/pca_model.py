@@ -8,7 +8,6 @@ Covers: Fit, Transform, Fit+Transform, Inverse Transform
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import cm
-from matplotlib.widgets import Button
 from mpl_toolkits.mplot3d import Axes3D  # Needed for 3D plotting
 
 # ─────────────────────────────────────────────────────────────
@@ -31,7 +30,6 @@ class PCA:
         self._fig = None
         self._ax = None
         self._ax_3d = None
-        self._ax_2d = None
         self._ax_scree = None
         self._ax_error = None
         self._scatter = None
@@ -39,12 +37,8 @@ class PCA:
         self._cbar = None
         self._view_cbar = None
         self._view_cbar_mode = None
-        self._view_cbar_ax = None
         self._axis_limits = None
         self._error_history = []
-        self._view_mode = "3d"
-        self._toggle_button_ax = None
-        self._toggle_button = None
         self._latest_X_reduced = None
         self._latest_title = "PCA: 3D Projection"
         self._latest_point_size = 20
@@ -259,17 +253,14 @@ class PCA:
     # STAGE 9: 3D SCATTER UPDATE
     # What it does: Draws/refreshes the 3D projection scatter.
     # ─────────────────────────────────────────────────────────────
-    def _update_3d_scatter(self, X_reduced, title, point_size, labels=None, sil_score=None, entropy=None):
-        x_vals, y_vals, z_vals = X_reduced[:,0], X_reduced[:,1], X_reduced[:,2]
+    def _update_3d_scatter(self, X_reduced: np.ndarray, title: str, point_size: int):
+        x_vals = X_reduced[:, 0]
+        y_vals = X_reduced[:, 1]
+        z_vals = X_reduced[:, 2]
 
-        # Colour by cluster if labels provided, otherwise fall back to original rainbow
-        if labels is not None:
-            rgba_colors = cm.tab10(labels / labels.max())
-            rgba_colors[:,3] = np.linspace(0.20, 0.95, X_reduced.shape[0])
-        else:
-            color_idx = np.linspace(0, 1, X_reduced.shape[0])
-            rgba_colors = cm.rainbow(color_idx)
-            rgba_colors[:,3] = np.linspace(0.20, 0.95, X_reduced.shape[0])
+        color_idx = np.linspace(0, 1, X_reduced.shape[0])
+        rgba_colors = cm.rainbow(color_idx)
+        rgba_colors[:, 3] = np.linspace(0.20, 0.95, X_reduced.shape[0])
 
         x_min, x_max = float(np.min(x_vals)), float(np.max(x_vals))
         y_min, y_max = float(np.min(y_vals)), float(np.max(y_vals))
@@ -318,11 +309,12 @@ class PCA:
                     self._view_cbar.remove()
                 except Exception:
                     pass
-            if self._view_cbar_ax is not None:
-                self._view_cbar_ax.cla()
             self._view_cbar = self._fig.colorbar(
                 cm.ScalarMappable(cmap="rainbow"),
-                cax=self._view_cbar_ax,
+                ax=self._ax_3d,
+                pad=0.18,
+                fraction=0.022,
+                shrink=0.55,
             )
             self._view_cbar.set_label("Time (old → new)", rotation=270, labelpad=16, color="white", fontsize=9)
             self._view_cbar.ax.tick_params(colors="white", labelsize=8)
@@ -336,50 +328,8 @@ class PCA:
         else:
             self._latest_point._offsets3d = ([x_vals[-1]], [y_vals[-1]], [z_vals[-1]])
             self._latest_point.set_sizes(np.array([point_size * 2.5]))
-            
 
         self._ax_3d.set_title(title, pad=12, fontsize=12, color="white")
-
-        if sil_score is not None and entropy is not None:
-            self._ax_3d.text2D(
-                0.02, 0.05,
-                f"Silhouette: {sil_score:.3f}   Entropy: {entropy:.3f}",
-                transform=self._ax_3d.transAxes,
-                fontsize=8,
-                color="white",
-                alpha=0.8,
-            )
-
-    def _update_2d_hexbin(self, X_reduced: np.ndarray, title: str):
-        x_vals = X_reduced[:, 0]
-        y_vals = X_reduced[:, 1]
-
-        ax = self._ax_2d
-        ax.cla()
-        ax.set_facecolor("#111111")
-        ax.grid(alpha=0.25)
-        ax.set_xlabel("PC1", fontsize=10, color="white")
-        ax.set_ylabel("PC2", fontsize=10, color="white")
-        ax.set_title(f"{title} — 2D Density", pad=10, fontsize=11, color="white")
-        ax.tick_params(colors="white", labelsize=8)
-
-        hb = ax.hexbin(x_vals, y_vals, gridsize=35, mincnt=1, cmap="viridis")
-        ax.scatter([x_vals[-1]], [y_vals[-1]], c="white", edgecolor="black", s=45, zorder=10)
-
-        if self._view_cbar_mode != "2d":
-            if self._view_cbar is not None:
-                try:
-                    self._view_cbar.remove()
-                except Exception:
-                    pass
-            if self._view_cbar_ax is not None:
-                self._view_cbar_ax.cla()
-            self._view_cbar = self._fig.colorbar(hb, cax=self._view_cbar_ax)
-            self._view_cbar.set_label("Points per bin", color="white", fontsize=9)
-            self._view_cbar.ax.tick_params(colors="white", labelsize=8)
-            self._view_cbar_mode = "2d"
-        else:
-            self._view_cbar.update_normal(hb)
 
     def _update_scree(self):
         ax = self._ax_scree
@@ -439,104 +389,50 @@ class PCA:
         self._ax_3d.set_zlabel("PC3", fontsize=10)
         self._ax_3d.grid(alpha=0.25)
 
-        self._ax_2d = self._fig.add_subplot(gs[:, 0])
-        self._ax_2d.set_visible(False)
-
         self._ax_scree = self._fig.add_subplot(gs[0, 1])
         self._ax_error = self._fig.add_subplot(gs[1, 1])
-
-        # Fixed colorbar axis to prevent subplot area shrinking on mode toggle
-        self._view_cbar_ax = self._fig.add_axes([0.92, 0.17, 0.015, 0.62])
-        self._view_cbar_ax.set_facecolor("#0d0d0d")
-
-        # ── Toggle button — bright blue, bold white text, easy to read ──
-        self._toggle_button_ax = self._fig.add_axes([0.43, 0.915, 0.14, 0.058])
-        self._toggle_button = Button(
-            self._toggle_button_ax,
-            "Switch to 2D",
-            color="#2979ff",
-            hovercolor="#5c9eff",
-        )
-        self._toggle_button.label.set_color("white")
-        self._toggle_button.label.set_fontsize(11)
-        self._toggle_button.label.set_fontweight("bold")
-        self._toggle_button.on_clicked(self._toggle_projection)
-
-    def _apply_view_mode(self):
-        if self._view_mode == "3d":
-            self._ax_3d.set_visible(True)
-            self._ax_2d.set_visible(False)
-            if self._toggle_button is not None:
-                self._toggle_button.label.set_text("Switch to 2D")
-        else:
-            self._ax_3d.set_visible(False)
-            self._ax_2d.set_visible(True)
-            if self._toggle_button is not None:
-                self._toggle_button.label.set_text("Switch to 3D")
-
-    def _toggle_projection(self, _event):
-        self._view_mode = "2d" if self._view_mode == "3d" else "3d"
-        self._apply_view_mode()
-        if self._latest_X_reduced is not None:
-            if self._view_mode == "3d":
-                self._update_3d_scatter(self._latest_X_reduced, self._latest_title, self._latest_point_size)
-            else:
-                self._update_2d_hexbin(self._latest_X_reduced, self._latest_title)
-        if self._fig is not None:
-            self._fig.canvas.draw_idle()
 
     # ─────────────────────────────────────────────────────────────
     # STAGE 10: MAIN UNIFIED PLOT METHOD
     # What it does: Initialises the shared figure (once) and
     # refreshes all three panels in one call.
     # ─────────────────────────────────────────────────────────────
-# plot_unified — add labels/metrics params
     def plot_unified(
         self,
         X_original: np.ndarray,
         X_reduced: np.ndarray,
         title: str = "PCA: 3D Projection",
         point_size: int = 20,
-        labels=None,
-        sil_score=None,
-        entropy=None,
     ):
         if X_reduced.ndim != 2 or X_reduced.shape[1] < 3:
             raise ValueError("X_reduced must have shape (N, 3+) for 3D plotting.")
+
         if self._fig is None or self._ax_3d is None:
             self._init_figure()
+
         self._latest_X_reduced = X_reduced
         self._latest_title = title
         self._latest_point_size = point_size
-        if self._view_mode == "3d":
-            self._update_3d_scatter(X_reduced, title, point_size,
-                                    labels=labels, sil_score=sil_score, entropy=entropy)
-        else:
-            self._update_2d_hexbin(X_reduced, title)
+
+        self._update_3d_scatter(X_reduced, title, point_size)
         self._update_scree()
         self._update_reconstruction_error(X_original)
-        self._apply_view_mode()
+
         self._fig.canvas.draw_idle()
         plt.pause(0.001)
-        plt.show(block=True)
         return self._fig
 
     # ─────────────────────────────────────────────────────────────
     # STAGE 11: CONVENIENCE: FIT → TRANSFORM → PLOT IN ONE CALL
     # ─────────────────────────────────────────────────────────────
-   # fit_transform_plot — add labels/metrics params
     def fit_transform_plot(
         self,
         X: np.ndarray,
         title: str = "PCA: 3D Projection",
         point_size: int = 20,
-        labels=None,
-        sil_score=None,
-        entropy=None,
     ):
         X_reduced = self.fit_transform(X)
-        self.plot_unified(X, X_reduced, title=title, point_size=point_size,
-                        labels=labels, sil_score=sil_score, entropy=entropy)
+        self.plot_unified(X, X_reduced, title=title, point_size=point_size)
         return X_reduced
 
 
