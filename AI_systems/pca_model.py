@@ -39,6 +39,7 @@ class PCA:
         self._cbar = None
         self._view_cbar = None
         self._view_cbar_mode = None
+        self._view_cbar_ax = None
         self._axis_limits = None
         self._error_history = []
         self._view_mode = "3d"
@@ -317,12 +318,11 @@ class PCA:
                     self._view_cbar.remove()
                 except Exception:
                     pass
+            if self._view_cbar_ax is not None:
+                self._view_cbar_ax.cla()
             self._view_cbar = self._fig.colorbar(
                 cm.ScalarMappable(cmap="rainbow"),
-                ax=self._ax_3d,
-                pad=0.18,
-                fraction=0.022,
-                shrink=0.55,
+                cax=self._view_cbar_ax,
             )
             self._view_cbar.set_label("Time (old → new)", rotation=270, labelpad=16, color="white", fontsize=9)
             self._view_cbar.ax.tick_params(colors="white", labelsize=8)
@@ -372,7 +372,9 @@ class PCA:
                     self._view_cbar.remove()
                 except Exception:
                     pass
-            self._view_cbar = self._fig.colorbar(hb, ax=ax, pad=0.02, fraction=0.04)
+            if self._view_cbar_ax is not None:
+                self._view_cbar_ax.cla()
+            self._view_cbar = self._fig.colorbar(hb, cax=self._view_cbar_ax)
             self._view_cbar.set_label("Points per bin", color="white", fontsize=9)
             self._view_cbar.ax.tick_params(colors="white", labelsize=8)
             self._view_cbar_mode = "2d"
@@ -442,6 +444,10 @@ class PCA:
 
         self._ax_scree = self._fig.add_subplot(gs[0, 1])
         self._ax_error = self._fig.add_subplot(gs[1, 1])
+
+        # Fixed colorbar axis to prevent subplot area shrinking on mode toggle
+        self._view_cbar_ax = self._fig.add_axes([0.92, 0.17, 0.015, 0.62])
+        self._view_cbar_ax.set_facecolor("#0d0d0d")
 
         # ── Toggle button — bright blue, bold white text, easy to read ──
         self._toggle_button_ax = self._fig.add_axes([0.43, 0.915, 0.14, 0.058])
