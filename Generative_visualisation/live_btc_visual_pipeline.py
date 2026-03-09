@@ -25,11 +25,16 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
 from Data_Pipeline import Real_time_Crypto as rtc
+from Generative_visualisation import live_btc_pca_visual as pca_runner
 from AI_systems.latent_visual_mapper import (
     StreamingLatentVisualMapper,
     set_default_mapper,
 )
 from Generative_visualisation.visual_engine import VisualEngine
+
+# In this integrated visual pipeline we always keep PCA plotting disabled;
+# PCA is still computed, but only the generative visual output is shown.
+pca_runner.ENABLE_PCA_PLOT = False
 
 
 MODEL_DIR = Path("AI_systems") / "latent_mapper_artifacts"
@@ -98,7 +103,7 @@ async def stream_btc_visual_parameters() -> None:
     print("  Live BTC -> PCA -> Generative Visual Parameters")
     print(f"  Symbol   : {rtc.SYMBOLS[0]}")
     print(f"  Interval : {rtc.INTERVAL}")
-    print(f"  PCA Plot : {'ON' if rtc.ENABLE_PCA_PLOT else 'OFF'}")
+    print(f"  PCA Plot : {'ON' if pca_runner.ENABLE_PCA_PLOT else 'OFF'}")
     print("=" * 58)
 
     rtc.preload_buffers_from_csv(rtc.OUTPUT_DIR, rtc.BUFFER_SIZE)
@@ -125,10 +130,10 @@ async def stream_btc_visual_parameters() -> None:
                 rtc.save_row_to_csv(row, rtc.SYMBOLS[0], rtc.OUTPUT_DIR)
 
                 matrix = rtc.build_feature_matrix(rtc.SYMBOLS[0])
-                pca_latest = rtc.run_pca(rtc.SYMBOLS[0], matrix)
+                pca_latest = pca_runner.run_pca(rtc.SYMBOLS[0], matrix)
 
                 if pca_latest is None:
-                    min_rows = max(rtc.PCA_N_COMPONENTS + 1, 2)
+                    min_rows = max(pca_runner.PCA_N_COMPONENTS + 1, 2)
                     print(f"[{rtc.SYMBOLS[0]}] PCA waiting: need >= {min_rows}, have {matrix.shape[0]}")
                     continue
 
