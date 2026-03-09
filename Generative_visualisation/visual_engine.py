@@ -45,7 +45,9 @@ class VisualEngine:
             "noise_scale": 0.5,
             "color_dynamics": 0.5,
         }
+        self.display_params = dict(self.current_params)
         self.target_params = dict(self.current_params)
+        self.display_wiggle = 8e-4
         self.arm_count = 3
         self.arm_twist = 4.4
 
@@ -56,7 +58,7 @@ class VisualEngine:
         plt.ion()
         self.fig, self.ax = plt.subplots(figsize=(self.width, self.height))
         self.fig.subplots_adjust(left=0.05, right=0.66, top=0.93, bottom=0.06)
-        self.fig.patch.set_facecolor("#03040a")
+        self.fig.patch.set_facecolor("#090c1f")
         self.ax.set_facecolor("#03040a")
         self.ax.set_xlim(-1.25, 1.25)
         self.ax.set_ylim(-1.25, 1.25)
@@ -144,6 +146,20 @@ class VisualEngine:
             "color map      : dark->warm plasma gradient"
         )
 
+    def _update_display_params(self):
+        keys = [
+            "motion_intensity",
+            "particle_density",
+            "distortion_strength",
+            "noise_scale",
+            "color_dynamics",
+        ]
+        for idx, key in enumerate(keys):
+            base = float(self.current_params[key])
+            phase = 0.055 * self.frame_idx + 0.9 * idx
+            wiggle = self.display_wiggle * np.sin(phase)
+            self.display_params[key] = float(np.clip(base + wiggle, 0.0, 1.0))
+
     def _initialize_particles(self, n_particles: int):
         self.positions = self._sample_galaxy_positions(n_particles)
 
@@ -219,7 +235,7 @@ class VisualEngine:
         }
 
         if self.info_text is not None:
-            self.info_text.set_text(self._build_info_panel(self.current_params, self.target_params))
+            self.info_text.set_text(self._build_info_panel(self.display_params, self.target_params))
 
         self._tick()
 
@@ -232,6 +248,8 @@ class VisualEngine:
                 (1.0 - self.smoothing_alpha) * self.current_params[key]
                 + self.smoothing_alpha * target_value
             )
+
+        self._update_display_params()
 
         motion = self.current_params["motion_intensity"]
         density = self.current_params["particle_density"]
@@ -300,7 +318,7 @@ class VisualEngine:
             self.scatter.set_facecolors(self.colors)
 
         if self.info_text is not None:
-            self.info_text.set_text(self._build_info_panel(self.current_params, self.target_params))
+            self.info_text.set_text(self._build_info_panel(self.display_params, self.target_params))
 
         self.frame_idx += 1
         self.fig.canvas.draw_idle()
