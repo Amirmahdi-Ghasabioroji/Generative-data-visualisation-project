@@ -59,6 +59,7 @@ class LiveBTCVisualBridge:
 
         self.pca_warmup: Deque[np.ndarray] = deque(maxlen=max(WARMUP_POINTS * 2, 192))
         self.prev_latent: Optional[np.ndarray] = None
+        self.last_visual_params: Optional[Dict[str, float]] = None
         self.last_regime_info: Dict[str, object] = {
             "regime_id": None,
             "confidence": 0.0,
@@ -100,6 +101,7 @@ class LiveBTCVisualBridge:
             params = traversal[-1]
 
         self.prev_latent = z_t
+        self.last_visual_params = params
         self.last_regime_info = self.mapper.get_latest_regime_info()
         return params
 
@@ -121,7 +123,12 @@ async def stream_btc_visual_parameters() -> None:
     try:
         async with bm.kline_socket(symbol=rtc.SYMBOLS[0], interval=rtc.INTERVAL) as stream:
             while True:
-                msg = await stream.recv()
+                try:
+                    msg = await asyncio.wait_for(stream.recv(), timeout=0.08)
+                except asyncio.TimeoutError:
+                    if bridge.last_visual_params is not None:
+                        bridge.visual_engine.render(bridge.last_visual_params, regime_info=bridge.last_regime_info)
+                    continue
 
                 if msg.get("e") == "error":
                     print(f"[ERROR] {rtc.SYMBOLS[0]}: {msg.get('m', 'unknown error')}")
@@ -130,6 +137,8 @@ async def stream_btc_visual_parameters() -> None:
                 kline = msg["k"]
                 row = rtc.extract_features(kline, rtc.SYMBOLS[0])
                 if row is None:
+                    if bridge.last_visual_params is not None:
+                        bridge.visual_engine.render(bridge.last_visual_params, regime_info=bridge.last_regime_info)
                     continue
 
                 rtc.buffers[rtc.SYMBOLS[0]].append(row)
@@ -145,6 +154,8 @@ async def stream_btc_visual_parameters() -> None:
 
                 visual_params = bridge.on_new_latent(np.asarray(pca_latest, dtype=np.float32))
                 if visual_params is None:
+                    if bridge.last_visual_params is not None:
+                        bridge.visual_engine.render(bridge.last_visual_params, regime_info=bridge.last_regime_info)
                     continue
 
                 bridge.visual_engine.render(visual_params, regime_info=bridge.last_regime_info)

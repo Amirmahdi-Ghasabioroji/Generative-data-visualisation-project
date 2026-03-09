@@ -47,14 +47,18 @@ class VisualEngine:
             "noise_scale": 0.5,
             "color_dynamics": 0.5,
         }
-        self.display_params = dict(self.current_params)
+        self.latest_model_params = dict(self.current_params)
         self.target_params = dict(self.current_params)
-        self.display_wiggle = 8e-4
         self.arm_count = 3
         self.arm_twist = 4.4
         self.current_regime_id: Optional[int] = None
         self.current_regime_confidence = 0.0
         self.current_n_regimes = 0
+        self.latest_regime_info: dict = {
+            "regime_id": None,
+            "confidence": 0.0,
+            "n_regimes": 0,
+        }
 
     def _ensure_plot(self):
         if self.fig is not None and self.ax is not None:
@@ -147,34 +151,33 @@ class VisualEngine:
         )
 
     def _build_regime_panel(self) -> str:
-        regime_text = (
-            "warming"
-            if self.current_regime_id is None
-            else f"R{self.current_regime_id}/{max(1, self.current_n_regimes)}"
-        )
+        regime_id = self.latest_regime_info.get("regime_id")
+        confidence = float(self.latest_regime_info.get("confidence", 0.0))
+        n_regimes = int(max(1, self.latest_regime_info.get("n_regimes", 0)))
+
+        regime_text = "R?/?: warming"
+        if regime_id is not None and n_regimes > 0:
+            regime_text = f"R{int(regime_id)}/{n_regimes} conf={confidence:0.3f}"
+
         return (
             "Regime information\n"
-            f"current regime : {regime_text}\n"
-            f"confidence     : {self.current_regime_confidence:0.3f}\n"
-            f"arms           : {self.arm_count}\n"
-            f"arm twist      : {self.arm_twist:0.3f}\n"
-            "method         : online centroid clustering"
+            f"{regime_text}"
         )
 
-    def _build_info_panel(self, params: dict[str, float], target_params: dict[str, float] | None = None) -> str:
-        motion = float(np.clip(params.get("motion_intensity", 0.5), 0.0, 1.0))
-        density = float(np.clip(params.get("particle_density", 0.5), 0.0, 1.0))
-        distortion = float(np.clip(params.get("distortion_strength", 0.5), 0.0, 1.0))
-        noise = float(np.clip(params.get("noise_scale", 0.5), 0.0, 1.0))
-        color_dyn = float(np.clip(params.get("color_dynamics", 0.5), 0.0, 1.0))
+    def _build_info_panel(self, params: dict[str, float]) -> str:
+        motion = float(params.get("motion_intensity", 0.5))
+        density = float(params.get("particle_density", 0.5))
+        distortion = float(params.get("distortion_strength", 0.5))
+        noise = float(params.get("noise_scale", 0.5))
+        color_dyn = float(params.get("color_dynamics", 0.5))
 
         return (
             "Parameter meaning\n"
-            f"speed/motion : {motion:0.4f} -> particle velocity\n"
-            f"density       : {density:0.4f} -> number of particles\n"
-            f"distortion    : {distortion:0.4f} -> swirl/curve force\n"
-            f"noise         : {noise:0.4f} -> random jitter\n"
-            f"color dynamics: {color_dyn:0.4f} -> color shift rate\n"
+            f"speed/motion : {motion:0.3f}\n"
+            f"density       : {density:0.3f}\n"
+            f"distortion    : {distortion:0.3f}\n"
+            f"noise         : {noise:0.3f}\n"
+            f"color dynamics: {color_dyn:0.3f}\n"
             "color map      : dark->warm plasma gradient"
         )
 
@@ -204,20 +207,6 @@ class VisualEngine:
         self.current_regime_id = regime_id
         self.current_regime_confidence = confidence
         self.current_n_regimes = n_regimes
-
-    def _update_display_params(self):
-        keys = [
-            "motion_intensity",
-            "particle_density",
-            "distortion_strength",
-            "noise_scale",
-            "color_dynamics",
-        ]
-        for idx, key in enumerate(keys):
-            base = float(self.current_params[key])
-            phase = 0.055 * self.frame_idx + 0.9 * idx
-            wiggle = self.display_wiggle * np.sin(phase)
-            self.display_params[key] = float(np.clip(base + wiggle, 0.0, 1.0))
 
     def _initialize_particles(self, n_particles: int):
         self.positions = self._sample_galaxy_positions(n_particles)
@@ -284,7 +273,20 @@ class VisualEngine:
 
     def render(self, params: dict[str, float], regime_info: dict | None = None):
         self._ensure_plot()
-        self._apply_regime_style(regime_info)
+        self.latest_model_params = {
+            "motion_intensity": float(params.get("motion_intensity", 0.5)),
+            "particle_density": float(params.get("particle_density", 0.5)),
+            "distortion_strength": float(params.get("distortion_strength", 0.5)),
+            "noise_scale": float(params.get("noise_scale", 0.5)),
+            "color_dynamics": float(params.get("color_dynamics", 0.5)),
+        }
+        if regime_info is not None:
+            self.latest_regime_info = {
+                "regime_id": regime_info.get("regime_id"),
+                "confidence": float(regime_info.get("confidence", 0.0)),
+                "n_regimes": int(regime_info.get("n_regimes", 0)),
+            }
+        self._apply_regime_style(self.latest_regime_info)
 
         self.target_params = {
             "motion_intensity": float(np.clip(params.get("motion_intensity", 0.5), 0.0, 1.0)),
@@ -295,9 +297,13 @@ class VisualEngine:
         }
 
         if self.info_text is not None:
-            self.info_text.set_text(self._build_info_panel(self.display_params, self.target_params))
+            self.info_text.set_text(self._build_info_panel(self.latest_model_params))
         if self.regime_text is not None:
             self.regime_text.set_text(self._build_regime_panel())
+
+        if self.fig is not None:
+            self.fig.canvas.draw()
+            self.fig.canvas.flush_events()
 
         self._tick()
 
@@ -305,13 +311,13 @@ class VisualEngine:
         if self.fig is None or self.ax is None:
             return
 
+        self._apply_regime_style(self.latest_regime_info)
+
         for key, target_value in self.target_params.items():
             self.current_params[key] = (
                 (1.0 - self.smoothing_alpha) * self.current_params[key]
                 + self.smoothing_alpha * target_value
             )
-
-        self._update_display_params()
 
         motion = self.current_params["motion_intensity"]
         density = self.current_params["particle_density"]
@@ -380,10 +386,11 @@ class VisualEngine:
             self.scatter.set_facecolors(self.colors)
 
         if self.info_text is not None:
-            self.info_text.set_text(self._build_info_panel(self.display_params, self.target_params))
+            self.info_text.set_text(self._build_info_panel(self.latest_model_params))
         if self.regime_text is not None:
             self.regime_text.set_text(self._build_regime_panel())
 
         self.frame_idx += 1
-        self.fig.canvas.draw_idle()
+        self.fig.canvas.draw()
+        self.fig.canvas.flush_events()
         plt.pause(0.001)
