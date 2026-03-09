@@ -66,7 +66,7 @@ class VisualEngine:
         }
 
         # Debounce: require N consecutive matching regime IDs before committing
-        self._regime_debounce = 2
+        self._regime_debounce = 3
         self._pending_regime_id: Optional[int] = None
         self._pending_regime_count = 0
 
