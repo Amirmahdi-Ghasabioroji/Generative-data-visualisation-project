@@ -37,7 +37,7 @@ class VisualEngine:
 
         self.frame_idx = 0
         self.smoothing_alpha = 0.22
-        self.tick_interval_ms = 20
+        self.tick_interval_ms = 24
         self.current_params = {
             "motion_intensity": 0.5,
             "particle_density": 0.5,
@@ -46,6 +46,8 @@ class VisualEngine:
             "color_dynamics": 0.5,
         }
         self.target_params = dict(self.current_params)
+        self.arm_count = 3
+        self.arm_twist = 4.4
 
     def _ensure_plot(self):
         if self.fig is not None and self.ax is not None:
@@ -54,8 +56,8 @@ class VisualEngine:
         plt.ion()
         self.fig, self.ax = plt.subplots(figsize=(self.width, self.height))
         self.fig.subplots_adjust(left=0.05, right=0.66, top=0.93, bottom=0.06)
-        self.fig.patch.set_facecolor("#05060a")
-        self.ax.set_facecolor("#05060a")
+        self.fig.patch.set_facecolor("#03040a")
+        self.ax.set_facecolor("#03040a")
         self.ax.set_xlim(-1.25, 1.25)
         self.ax.set_ylim(-1.25, 1.25)
         self.ax.set_xticks([])
@@ -125,35 +127,64 @@ class VisualEngine:
             "  changes direction/speed more frequently"
         )
 
-    def _build_info_panel(self, params: dict[str, float]) -> str:
+    def _build_info_panel(self, params: dict[str, float], target_params: dict[str, float] | None = None) -> str:
         motion = float(np.clip(params.get("motion_intensity", 0.5), 0.0, 1.0))
         density = float(np.clip(params.get("particle_density", 0.5), 0.0, 1.0))
         distortion = float(np.clip(params.get("distortion_strength", 0.5), 0.0, 1.0))
         noise = float(np.clip(params.get("noise_scale", 0.5), 0.0, 1.0))
         color_dyn = float(np.clip(params.get("color_dynamics", 0.5), 0.0, 1.0))
 
+        if target_params is None:
+            target_params = params
+
+        t_motion = float(np.clip(target_params.get("motion_intensity", motion), 0.0, 1.0))
+        t_density = float(np.clip(target_params.get("particle_density", density), 0.0, 1.0))
+        t_distortion = float(np.clip(target_params.get("distortion_strength", distortion), 0.0, 1.0))
+        t_noise = float(np.clip(target_params.get("noise_scale", noise), 0.0, 1.0))
+        t_color_dyn = float(np.clip(target_params.get("color_dynamics", color_dyn), 0.0, 1.0))
+
         return (
             "Parameter meaning\n"
-            f"speed/motion : {motion:0.3f}  -> particle velocity\n"
-            f"density       : {density:0.3f}  -> number of particles\n"
-            f"distortion    : {distortion:0.3f}  -> swirl/curve force\n"
-            f"noise         : {noise:0.3f}  -> random jitter\n"
-            f"color dynamics: {color_dyn:0.3f}  -> color shift rate\n"
+            f"speed/motion : {motion:0.4f} (live {t_motion:0.4f}) -> particle velocity\n"
+            f"density       : {density:0.4f} (live {t_density:0.4f}) -> number of particles\n"
+            f"distortion    : {distortion:0.4f} (live {t_distortion:0.4f}) -> swirl/curve force\n"
+            f"noise         : {noise:0.4f} (live {t_noise:0.4f}) -> random jitter\n"
+            f"color dynamics: {color_dyn:0.4f} (live {t_color_dyn:0.4f}) -> color shift rate\n"
             "color map      : dark->warm plasma gradient"
         )
 
     def _initialize_particles(self, n_particles: int):
-        angle = np.random.uniform(0, 2 * np.pi, size=n_particles)
-        radius = np.sqrt(np.random.uniform(0.0, 1.0, size=n_particles))
-        x = radius * np.cos(angle)
-        y = radius * np.sin(angle)
-        self.positions = np.column_stack([x, y]).astype(np.float32)
+        self.positions = self._sample_galaxy_positions(n_particles)
 
-        vx = np.random.normal(0.0, 0.01, size=n_particles)
-        vy = np.random.normal(0.0, 0.01, size=n_particles)
-        self.velocities = np.column_stack([vx, vy]).astype(np.float32)
+        radius = np.linalg.norm(self.positions, axis=1) + 1e-6
+        tangential = np.column_stack([-self.positions[:, 1], self.positions[:, 0]]) / radius[:, None]
+        speed = 0.0012 + 0.0042 * (1.0 - np.clip(radius / 1.25, 0.0, 1.0))
+        vxvy = tangential * speed[:, None]
+        jitter = np.random.normal(0.0, 0.0016, size=(n_particles, 2))
+        self.velocities = (vxvy + jitter).astype(np.float32)
 
         self.colors = cm.twilight(np.linspace(0, 1, n_particles))
+
+    def _sample_galaxy_positions(self, n_particles: int) -> np.ndarray:
+        if n_particles <= 0:
+            return np.empty((0, 2), dtype=np.float32)
+
+        arm_idx = np.random.randint(0, self.arm_count, size=n_particles)
+        base_theta = (2 * np.pi / self.arm_count) * arm_idx
+
+        radius = np.random.beta(1.2, 2.8, size=n_particles) * 1.18
+        theta = base_theta + radius * self.arm_twist + np.random.normal(0.0, 0.14, size=n_particles)
+
+        x = radius * np.cos(theta)
+        y = radius * np.sin(theta)
+
+        core_n = min(n_particles, max(8, int(0.18 * n_particles)))
+        core_radius = np.random.beta(1.0, 6.0, size=core_n) * 0.22
+        core_theta = np.random.uniform(0.0, 2 * np.pi, size=core_n)
+        x[:core_n] = core_radius * np.cos(core_theta)
+        y[:core_n] = core_radius * np.sin(core_theta)
+
+        return np.column_stack([x, y]).astype(np.float32)
 
     def _resize_particles(self, n_particles: int):
         current = 0 if self.positions is None else self.positions.shape[0]
@@ -172,15 +203,12 @@ class VisualEngine:
             return
 
         add = n_particles - current
-        angle = np.random.uniform(0, 2 * np.pi, size=add)
-        radius = np.sqrt(np.random.uniform(0.0, 1.0, size=add))
-        x = radius * np.cos(angle)
-        y = radius * np.sin(angle)
-        new_pos = np.column_stack([x, y]).astype(np.float32)
+        new_pos = self._sample_galaxy_positions(add)
 
-        vx = np.random.normal(0.0, 0.01, size=add)
-        vy = np.random.normal(0.0, 0.01, size=add)
-        new_vel = np.column_stack([vx, vy]).astype(np.float32)
+        radius = np.linalg.norm(new_pos, axis=1) + 1e-6
+        tangential = np.column_stack([-new_pos[:, 1], new_pos[:, 0]]) / radius[:, None]
+        speed = 0.0012 + 0.0042 * (1.0 - np.clip(radius / 1.25, 0.0, 1.0))
+        new_vel = (tangential * speed[:, None] + np.random.normal(0.0, 0.0016, size=(add, 2))).astype(np.float32)
 
         new_colors = cm.twilight(np.random.uniform(0.0, 1.0, size=add))
 
@@ -198,6 +226,9 @@ class VisualEngine:
             "noise_scale": float(np.clip(params.get("noise_scale", 0.5), 0.0, 1.0)),
             "color_dynamics": float(np.clip(params.get("color_dynamics", 0.5), 0.0, 1.0)),
         }
+
+        if self.info_text is not None:
+            self.info_text.set_text(self._build_info_panel(self.current_params, self.target_params))
 
         self._tick()
 
@@ -220,18 +251,28 @@ class VisualEngine:
         n_particles = int(self.base_particles + density * 520)
         self._resize_particles(n_particles)
 
-        speed = 0.001 + motion * 0.008
-        drift_angle = 0.10 * self.frame_idx
+        speed = 0.0007 + motion * 0.0052
+        drift_angle = 0.06 * self.frame_idx
         drift = np.array([np.cos(drift_angle), np.sin(drift_angle)], dtype=np.float32)
 
         center = self.positions.copy()
-        swirl = np.column_stack([-center[:, 1], center[:, 0]])
-        swirl_strength = 0.0008 + distortion * 0.011
+        radius = np.linalg.norm(center, axis=1) + 1e-6
+        tangential = np.column_stack([-center[:, 1], center[:, 0]]) / radius[:, None]
+        radial_inward = -center / radius[:, None]
 
-        noise_amp = 0.0006 + noise * 0.008
+        swirl_strength = 0.0011 + distortion * 0.007
+        core_pull_strength = 0.0015 + 0.0048 * (1.0 - np.clip(radius / 1.25, 0.0, 1.0))
+
+        noise_amp = 0.00045 + noise * 0.0055
         noise_term = np.random.normal(0.0, noise_amp, size=self.positions.shape)
 
-        self.velocities = 0.87 * self.velocities + speed * drift + swirl_strength * swirl + noise_term
+        self.velocities = (
+            0.93 * self.velocities
+            + speed * drift
+            + swirl_strength * tangential
+            + core_pull_strength[:, None] * radial_inward
+            + noise_term
+        )
         self.positions = self.positions + self.velocities
 
         radius = np.linalg.norm(self.positions, axis=1)
@@ -240,12 +281,18 @@ class VisualEngine:
             self.positions[out] *= 0.15
             self.velocities[out] *= -0.35
 
-        phase = (np.linspace(0, 1, n_particles) + self.frame_idx * (0.001 + 0.018 * color_dyn)) % 1.0
-        self.colors = cm.plasma(phase)
+        radius_now = np.linalg.norm(self.positions, axis=1)
+        warm_bias = np.clip(1.0 - radius_now / 1.25, 0.0, 1.0)
+        phase = (0.25 * np.linspace(0, 1, n_particles) + 0.75 * warm_bias + self.frame_idx * (0.0006 + 0.012 * color_dyn)) % 1.0
+        self.colors = cm.magma(phase)
 
-        sizes = 8.0 + 26.0 * density + 8.0 * motion
+        # Strengthen colour intensity (vivid highlights while preserving palette ordering)
+        self.colors[:, :3] = np.clip(self.colors[:, :3] ** 0.82, 0.0, 1.0)
+
+        core_emphasis = np.clip(1.0 - radius_now / 1.25, 0.0, 1.0)
+        sizes = 6.0 + 18.0 * density + 6.0 * motion + 20.0 * core_emphasis
         alpha = 0.22 + 0.62 * (0.55 * density + 0.45 * color_dyn)
-        self.colors[:, 3] = np.clip(alpha, 0.15, 0.95)
+        self.colors[:, 3] = np.clip(alpha * (0.72 + 0.55 * core_emphasis), 0.20, 1.0)
 
         if self.scatter is None:
             self.scatter = self.ax.scatter(
@@ -254,6 +301,7 @@ class VisualEngine:
                 s=sizes,
                 c=self.colors,
                 edgecolors="none",
+                zorder=2,
             )
         else:
             self.scatter.set_offsets(self.positions)
@@ -261,7 +309,7 @@ class VisualEngine:
             self.scatter.set_facecolors(self.colors)
 
         if self.info_text is not None:
-            self.info_text.set_text(self._build_info_panel(self.current_params))
+            self.info_text.set_text(self._build_info_panel(self.current_params, self.target_params))
 
         self.frame_idx += 1
         self.fig.canvas.draw_idle()
