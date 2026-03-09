@@ -147,7 +147,7 @@ async def stream_btc_visual_parameters() -> None:
                 if visual_params is None:
                     continue
 
-                bridge.visual_engine.render(visual_params)
+                bridge.visual_engine.render(visual_params, regime_info=bridge.last_regime_info)
                 regime_id = bridge.last_regime_info.get("regime_id")
                 regime_conf = float(bridge.last_regime_info.get("confidence", 0.0))
                 n_regimes = int(bridge.last_regime_info.get("n_regimes", 0))

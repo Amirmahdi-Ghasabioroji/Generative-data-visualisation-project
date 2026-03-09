@@ -14,6 +14,7 @@ from __future__ import annotations
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import cm
+from typing import Optional
 
 
 class VisualEngine:
@@ -26,6 +27,7 @@ class VisualEngine:
         self.ax = None
         self.scatter = None
         self.info_text = None
+        self.regime_text = None
         self.interpret_text = None
         self.heatmap_ax = None
         self.heatmap_text = None
@@ -50,6 +52,9 @@ class VisualEngine:
         self.display_wiggle = 8e-4
         self.arm_count = 3
         self.arm_twist = 4.4
+        self.current_regime_id: Optional[int] = None
+        self.current_regime_confidence = 0.0
+        self.current_n_regimes = 0
 
     def _ensure_plot(self):
         if self.fig is not None and self.ax is not None:
@@ -78,9 +83,21 @@ class VisualEngine:
             bbox={"facecolor": "#111827", "alpha": 0.55, "edgecolor": "#334155", "pad": 6},
         )
 
+        self.regime_text = self.fig.text(
+            0.69,
+            0.66,
+            self._build_regime_panel(),
+            color="white",
+            fontsize=8,
+            va="top",
+            ha="left",
+            family="monospace",
+            bbox={"facecolor": "#1f2937", "alpha": 0.55, "edgecolor": "#334155", "pad": 6},
+        )
+
         self.interpret_text = self.fig.text(
             0.69,
-            0.48,
+            0.42,
             self._build_interpretation_panel(),
             color="white",
             fontsize=8,
@@ -129,6 +146,21 @@ class VisualEngine:
             "  changes direction/speed more frequently"
         )
 
+    def _build_regime_panel(self) -> str:
+        regime_text = (
+            "warming"
+            if self.current_regime_id is None
+            else f"R{self.current_regime_id}/{max(1, self.current_n_regimes)}"
+        )
+        return (
+            "Regime information\n"
+            f"current regime : {regime_text}\n"
+            f"confidence     : {self.current_regime_confidence:0.3f}\n"
+            f"arms           : {self.arm_count}\n"
+            f"arm twist      : {self.arm_twist:0.3f}\n"
+            "method         : online centroid clustering"
+        )
+
     def _build_info_panel(self, params: dict[str, float], target_params: dict[str, float] | None = None) -> str:
         motion = float(np.clip(params.get("motion_intensity", 0.5), 0.0, 1.0))
         density = float(np.clip(params.get("particle_density", 0.5), 0.0, 1.0))
@@ -145,6 +177,33 @@ class VisualEngine:
             f"color dynamics: {color_dyn:0.4f} -> color shift rate\n"
             "color map      : dark->warm plasma gradient"
         )
+
+    def _apply_regime_style(self, regime_info: dict | None):
+        if not regime_info:
+            return
+
+        regime_id = regime_info.get("regime_id")
+        confidence = float(np.clip(float(regime_info.get("confidence", 0.0)), 0.0, 1.0))
+        n_regimes = int(max(2, regime_info.get("n_regimes", 3)))
+
+        if regime_id is None:
+            self.current_regime_id = None
+            self.current_regime_confidence = confidence
+            self.current_n_regimes = n_regimes
+            return
+
+        regime_id = int(np.clip(int(regime_id), 0, n_regimes - 1))
+        target_arm_count = int(np.clip(2 + regime_id, 2, 6))
+        target_arm_twist = float(3.4 + 0.85 * regime_id)
+
+        blend = 0.12 + 0.28 * confidence
+        blended_count = (1.0 - blend) * float(self.arm_count) + blend * float(target_arm_count)
+        self.arm_count = int(np.clip(int(round(blended_count)), 2, 6))
+        self.arm_twist = float((1.0 - blend) * self.arm_twist + blend * target_arm_twist)
+
+        self.current_regime_id = regime_id
+        self.current_regime_confidence = confidence
+        self.current_n_regimes = n_regimes
 
     def _update_display_params(self):
         keys = [
@@ -223,8 +282,9 @@ class VisualEngine:
         self.velocities = np.vstack([self.velocities, new_vel])
         self.colors = np.vstack([self.colors, new_colors])
 
-    def render(self, params: dict[str, float]):
+    def render(self, params: dict[str, float], regime_info: dict | None = None):
         self._ensure_plot()
+        self._apply_regime_style(regime_info)
 
         self.target_params = {
             "motion_intensity": float(np.clip(params.get("motion_intensity", 0.5), 0.0, 1.0)),
@@ -236,6 +296,8 @@ class VisualEngine:
 
         if self.info_text is not None:
             self.info_text.set_text(self._build_info_panel(self.display_params, self.target_params))
+        if self.regime_text is not None:
+            self.regime_text.set_text(self._build_regime_panel())
 
         self._tick()
 
@@ -319,6 +381,8 @@ class VisualEngine:
 
         if self.info_text is not None:
             self.info_text.set_text(self._build_info_panel(self.display_params, self.target_params))
+        if self.regime_text is not None:
+            self.regime_text.set_text(self._build_regime_panel())
 
         self.frame_idx += 1
         self.fig.canvas.draw_idle()
