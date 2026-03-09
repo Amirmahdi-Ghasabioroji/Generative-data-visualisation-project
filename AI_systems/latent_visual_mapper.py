@@ -203,17 +203,21 @@ class StreamingLatentVisualMapper:
         self.regime_centroids = np.asarray(centroids, dtype=np.float32)
         self.regime_counts = np.ones((self.n_regimes,), dtype=np.float32)
 
-    def _assign_regime(self, h_t: np.ndarray) -> tuple[int, float]:
+    def _assign_regime(self, h_t: np.ndarray, current_regime_id: Optional[int] = None) -> tuple[int, float]:
         if self.regime_centroids is None:
             raise RuntimeError("Regime centroids are not initialized.")
 
-        diff = self.regime_centroids - h_t[None, :]
-        distances = np.linalg.norm(diff, axis=1)
-        regime_id = int(np.argmin(distances))
-        best = float(distances[regime_id])
-        spread = float(np.mean(distances)) + 1e-6
-        confidence = float(1.0 / (1.0 + best / spread))
-        return regime_id, confidence
+        distances = np.linalg.norm(self.regime_centroids - h_t[None, :], axis=1)
+        sorted_idx = np.argsort(distances)
+        best_id = int(sorted_idx[0])
+        best_dist = float(distances[best_id])
+        second_dist = float(distances[sorted_idx[1]]) if len(sorted_idx) > 1 else best_dist + 1e-6
+
+        # Margin-based confidence: how much closer the winner is vs the runner-up
+        margin = (second_dist - best_dist) / (second_dist + 1e-6)
+        confidence = float(np.clip(margin, 0.0, 1.0))
+
+        return best_id, confidence
 
     def _update_regime_centroid(self, regime_id: int, h_t: np.ndarray):
         if self.regime_centroids is None or self.regime_counts is None:
@@ -239,7 +243,7 @@ class StreamingLatentVisualMapper:
                 return
 
         h_t = self._bottleneck_batch(np.asarray(z_t, dtype=np.float32).reshape(1, -1))[0]
-        regime_id, confidence = self._assign_regime(h_t)
+        regime_id, confidence = self._assign_regime(h_t, current_regime_id=self.latest_regime_id)
         self._update_regime_centroid(regime_id, h_t)
         self.latest_regime_id = regime_id
         self.latest_regime_confidence = confidence

@@ -60,6 +60,15 @@ class VisualEngine:
             "n_regimes": 0,
         }
 
+        # Debounce: require N consecutive matching regime IDs before committing
+        self._regime_debounce = 2
+        self._pending_regime_id: Optional[int] = None
+        self._pending_regime_count = 0
+
+        # Subtle pulse on regime switch: briefly lifts motion + distortion only
+        self._flash_frames = 0
+        self._flash_max = 49  # ~0.8s at 24ms per frame
+
     def _ensure_plot(self):
         if self.fig is not None and self.ax is not None:
             return
@@ -193,9 +202,28 @@ class VisualEngine:
             self.current_regime_id = None
             self.current_regime_confidence = confidence
             self.current_n_regimes = n_regimes
+            self._pending_regime_id = None
+            self._pending_regime_count = 0
             return
 
         regime_id = int(np.clip(int(regime_id), 0, n_regimes - 1))
+
+        # Debounce: only commit once the same regime appears N times in a row
+        if regime_id == self._pending_regime_id:
+            self._pending_regime_count += 1
+        else:
+            self._pending_regime_id = regime_id
+            self._pending_regime_count = 1
+
+        if self._pending_regime_count < self._regime_debounce:
+            self.current_regime_confidence = confidence
+            self.current_n_regimes = n_regimes
+            return
+
+        # Regime confirmed — trigger a subtle pulse if it actually changed
+        if regime_id != self.current_regime_id:
+            self._flash_frames = self._flash_max
+
         target_arm_count = int(np.clip(2 + regime_id, 2, 6))
         target_arm_twist = float(3.4 + 0.85 * regime_id)
 
@@ -337,6 +365,15 @@ class VisualEngine:
         tangential = np.column_stack([-center[:, 1], center[:, 0]]) / radius[:, None]
         radial_inward = -center / radius[:, None]
 
+        # Pulse on regime switch: boost motion, distortion, particle size and brightness
+        flash_t = 0.0
+        if self._flash_frames > 0:
+            flash_t = (self._flash_frames / self._flash_max) ** 0.5
+            motion = float(np.clip(motion + 0.35 * flash_t, 0.0, 1.0))
+            distortion = float(np.clip(distortion + 0.25 * flash_t, 0.0, 1.0))
+            noise = float(np.clip(noise + 0.15 * flash_t, 0.0, 1.0))
+            self._flash_frames -= 1
+
         swirl_strength = 0.0011 + distortion * 0.007
         core_pull_strength = 0.0015 + 0.0048 * (1.0 - np.clip(radius / 1.25, 0.0, 1.0))
 
@@ -367,9 +404,10 @@ class VisualEngine:
         self.colors[:, :3] = np.clip(self.colors[:, :3] ** 0.82, 0.0, 1.0)
 
         core_emphasis = np.clip(1.0 - radius_now / 1.25, 0.0, 1.0)
-        sizes = 6.0 + 18.0 * density + 6.0 * motion + 20.0 * core_emphasis
+        sizes = 6.0 + 18.0 * density + 6.0 * motion + 20.0 * core_emphasis + 19.0 * flash_t
         alpha = 0.22 + 0.62 * (0.55 * density + 0.45 * color_dyn)
-        self.colors[:, 3] = np.clip(alpha * (0.72 + 0.55 * core_emphasis), 0.20, 1.0)
+        base_alpha = np.clip(alpha * (0.72 + 0.55 * core_emphasis), 0.20, 1.0)
+        self.colors[:, 3] = np.clip(base_alpha + 0.25 * flash_t, 0.20, 1.0)
 
         if self.scatter is None:
             self.scatter = self.ax.scatter(
