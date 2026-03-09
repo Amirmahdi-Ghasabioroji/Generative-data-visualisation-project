@@ -258,14 +258,17 @@ class PCA:
     # STAGE 9: 3D SCATTER UPDATE
     # What it does: Draws/refreshes the 3D projection scatter.
     # ─────────────────────────────────────────────────────────────
-    def _update_3d_scatter(self, X_reduced: np.ndarray, title: str, point_size: int):
-        x_vals = X_reduced[:, 0]
-        y_vals = X_reduced[:, 1]
-        z_vals = X_reduced[:, 2]
+    def _update_3d_scatter(self, X_reduced, title, point_size, labels=None, sil_score=None, entropy=None):
+        x_vals, y_vals, z_vals = X_reduced[:,0], X_reduced[:,1], X_reduced[:,2]
 
-        color_idx = np.linspace(0, 1, X_reduced.shape[0])
-        rgba_colors = cm.rainbow(color_idx)
-        rgba_colors[:, 3] = np.linspace(0.20, 0.95, X_reduced.shape[0])
+        # Colour by cluster if labels provided, otherwise fall back to original rainbow
+        if labels is not None:
+            rgba_colors = cm.tab10(labels / labels.max())
+            rgba_colors[:,3] = np.linspace(0.20, 0.95, X_reduced.shape[0])
+        else:
+            color_idx = np.linspace(0, 1, X_reduced.shape[0])
+            rgba_colors = cm.rainbow(color_idx)
+            rgba_colors[:,3] = np.linspace(0.20, 0.95, X_reduced.shape[0])
 
         x_min, x_max = float(np.min(x_vals)), float(np.max(x_vals))
         y_min, y_max = float(np.min(y_vals)), float(np.max(y_vals))
@@ -333,8 +336,19 @@ class PCA:
         else:
             self._latest_point._offsets3d = ([x_vals[-1]], [y_vals[-1]], [z_vals[-1]])
             self._latest_point.set_sizes(np.array([point_size * 2.5]))
+            
 
         self._ax_3d.set_title(title, pad=12, fontsize=12, color="white")
+
+        if sil_score is not None and entropy is not None:
+            self._ax_3d.text2D(
+                0.02, 0.05,
+                f"Silhouette: {sil_score:.3f}   Entropy: {entropy:.3f}",
+                transform=self._ax_3d.transAxes,
+                fontsize=8,
+                color="white",
+                alpha=0.8,
+            )
 
     def _update_2d_hexbin(self, X_reduced: np.ndarray, title: str):
         x_vals = X_reduced[:, 0]
@@ -470,46 +484,53 @@ class PCA:
     # What it does: Initialises the shared figure (once) and
     # refreshes all three panels in one call.
     # ─────────────────────────────────────────────────────────────
+# plot_unified — add labels/metrics params
     def plot_unified(
         self,
         X_original: np.ndarray,
         X_reduced: np.ndarray,
         title: str = "PCA: 3D Projection",
         point_size: int = 20,
+        labels=None,
+        sil_score=None,
+        entropy=None,
     ):
         if X_reduced.ndim != 2 or X_reduced.shape[1] < 3:
             raise ValueError("X_reduced must have shape (N, 3+) for 3D plotting.")
-
         if self._fig is None or self._ax_3d is None:
             self._init_figure()
-
         self._latest_X_reduced = X_reduced
         self._latest_title = title
         self._latest_point_size = point_size
-
         if self._view_mode == "3d":
-            self._update_3d_scatter(X_reduced, title, point_size)
+            self._update_3d_scatter(X_reduced, title, point_size,
+                                    labels=labels, sil_score=sil_score, entropy=entropy)
         else:
             self._update_2d_hexbin(X_reduced, title)
         self._update_scree()
         self._update_reconstruction_error(X_original)
         self._apply_view_mode()
-
         self._fig.canvas.draw_idle()
         plt.pause(0.001)
+        plt.show(block=True)
         return self._fig
 
     # ─────────────────────────────────────────────────────────────
     # STAGE 11: CONVENIENCE: FIT → TRANSFORM → PLOT IN ONE CALL
     # ─────────────────────────────────────────────────────────────
+   # fit_transform_plot — add labels/metrics params
     def fit_transform_plot(
         self,
         X: np.ndarray,
         title: str = "PCA: 3D Projection",
         point_size: int = 20,
+        labels=None,
+        sil_score=None,
+        entropy=None,
     ):
         X_reduced = self.fit_transform(X)
-        self.plot_unified(X, X_reduced, title=title, point_size=point_size)
+        self.plot_unified(X, X_reduced, title=title, point_size=point_size,
+                        labels=labels, sil_score=sil_score, entropy=entropy)
         return X_reduced
 
 
