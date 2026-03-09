@@ -305,7 +305,7 @@ class VisualEngine:
             self.fig.canvas.draw()
             self.fig.canvas.flush_events()
 
-        self._tick()
+        
 
     def _tick(self):
         if self.fig is None or self.ax is None:
@@ -393,4 +393,4 @@ class VisualEngine:
         self.frame_idx += 1
         self.fig.canvas.draw()
         self.fig.canvas.flush_events()
-        plt.pause(0.001)
+        
