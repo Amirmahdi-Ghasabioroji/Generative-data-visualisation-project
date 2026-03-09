@@ -1,6 +1,6 @@
 """
 Binance Real-Time Data Pipeline — Group J
-Symbols: BTCUSDT + ETHUSDT
+Symbols: BTCUSDT
 Stack: numpy only (no pandas)
 Covers: FR1 (live ingestion), FR4 (real-time updates), NFR1 (<500ms latency)
 """
@@ -29,7 +29,7 @@ from AI_systems import pca_model
 # ─────────────────────────────────────────────────────────────
 
 # Symbols to track
-SYMBOLS = ['BTCUSDT', 'ETHUSDT']
+SYMBOLS = ['BTCUSDT']
 INTERVAL = "1s"
 OUTPUT_DIR = "binance_realtime"
 PCA_N_COMPONENTS = 3
@@ -53,7 +53,7 @@ FEATURE_COLS = [
 # streams write into concurrently.
 # Why it matters: asyncio.gather() runs both streams at the same
 # time — they share this buffer so the ML layer always sees a
-# combined BTC+ETH snapshot, not just one coin.
+# live BTC snapshot.
 # ─────────────────────────────────────────────────────────────
 
 # One deque per symbol — stores raw row dicts of completed candles
@@ -359,11 +359,10 @@ async def stream_symbol(bm: BinanceSocketManager, symbol: str) -> None:
 # ─────────────────────────────────────────────────────────────
 # STAGE 7: CONCURRENT STREAM MANAGER
 # What it does: Creates one Binance client, then uses
-# asyncio.gather() to run both symbol streams in parallel.
+# asyncio.gather() to run symbol streams in parallel.
 # Why it matters: gather() is the correct way to run multiple
 # async streams — they run concurrently in the same event loop
-# without blocking each other. This satisfies NFR1 (<500ms)
-# because neither stream waits for the other.
+# without blocking each other.
 # ─────────────────────────────────────────────────────────────
 
 async def run_pipeline() -> None:
@@ -386,11 +385,8 @@ async def run_pipeline() -> None:
     bm = BinanceSocketManager(client)
 
     try:
-        # Run BTC and ETH streams concurrently
-        await asyncio.gather(
-            stream_symbol(bm, "BTCUSDT"),
-            stream_symbol(bm, "ETHUSDT"),
-        )
+        # Run configured symbol streams concurrently (currently BTC only)
+        await asyncio.gather(*(stream_symbol(bm, symbol) for symbol in SYMBOLS))
     except KeyboardInterrupt:
         print("\n[STOP] Interrupted by user. Closing connection...")
     finally:
