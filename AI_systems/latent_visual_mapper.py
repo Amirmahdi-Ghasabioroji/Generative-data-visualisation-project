@@ -230,7 +230,7 @@ class StreamingLatentVisualMapper:
             return
 
         if self.regime_centroids is None:
-            if len(self.stream_buffer) >= max(24, self.n_regimes * 8):
+            if len(self.stream_buffer) >= 1:
                 boot = np.asarray(list(self.stream_buffer), dtype=np.float32)
                 self._initialize_regimes(boot)
             else:

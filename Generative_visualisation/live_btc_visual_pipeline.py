@@ -38,8 +38,8 @@ pca_runner.ENABLE_PCA_PLOT = False
 
 
 MODEL_DIR = Path("AI_systems") / "latent_mapper_artifacts"
-WARMUP_POINTS = 96
-WARMUP_EPOCHS = 30
+WARMUP_POINTS = 10
+WARMUP_EPOCHS = 10
 TRAVERSAL_STEPS = 6
 
 
