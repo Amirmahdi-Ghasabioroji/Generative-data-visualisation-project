@@ -134,22 +134,13 @@ class VisualEngine:
         noise = float(np.clip(params.get("noise_scale", 0.5), 0.0, 1.0))
         color_dyn = float(np.clip(params.get("color_dynamics", 0.5), 0.0, 1.0))
 
-        if target_params is None:
-            target_params = params
-
-        t_motion = float(np.clip(target_params.get("motion_intensity", motion), 0.0, 1.0))
-        t_density = float(np.clip(target_params.get("particle_density", density), 0.0, 1.0))
-        t_distortion = float(np.clip(target_params.get("distortion_strength", distortion), 0.0, 1.0))
-        t_noise = float(np.clip(target_params.get("noise_scale", noise), 0.0, 1.0))
-        t_color_dyn = float(np.clip(target_params.get("color_dynamics", color_dyn), 0.0, 1.0))
-
         return (
             "Parameter meaning\n"
-            f"speed/motion : {motion:0.4f} (live {t_motion:0.4f}) -> particle velocity\n"
-            f"density       : {density:0.4f} (live {t_density:0.4f}) -> number of particles\n"
-            f"distortion    : {distortion:0.4f} (live {t_distortion:0.4f}) -> swirl/curve force\n"
-            f"noise         : {noise:0.4f} (live {t_noise:0.4f}) -> random jitter\n"
-            f"color dynamics: {color_dyn:0.4f} (live {t_color_dyn:0.4f}) -> color shift rate\n"
+            f"speed/motion : {motion:0.4f} -> particle velocity\n"
+            f"density       : {density:0.4f} -> number of particles\n"
+            f"distortion    : {distortion:0.4f} -> swirl/curve force\n"
+            f"noise         : {noise:0.4f} -> random jitter\n"
+            f"color dynamics: {color_dyn:0.4f} -> color shift rate\n"
             "color map      : dark->warm plasma gradient"
         )
 
