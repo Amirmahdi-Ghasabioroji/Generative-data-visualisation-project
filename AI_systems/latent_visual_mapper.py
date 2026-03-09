@@ -10,7 +10,7 @@ import json
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Deque, Dict, List, Optional, Tuple
+from typing import Any, Deque, Dict, List, Optional, Tuple
 
 import numpy as np
 import tensorflow as tf
@@ -148,6 +148,7 @@ class StreamingLatentVisualMapper:
         model_dir: str | Path,
         pca_dim: int = 3,
         param_names: Optional[List[str]] = None,
+        n_regimes: int = 3,
         stream_buffer_size: int = 512,
         train_window: int = 128,
         train_every: int = 8,
@@ -162,6 +163,7 @@ class StreamingLatentVisualMapper:
         self.train_every = train_every
         self.traversal_steps = traversal_steps
         self.step_count = 0
+        self.n_regimes = max(2, int(n_regimes))
 
         self.model_dir = Path(model_dir)
         self.model_dir.mkdir(parents=True, exist_ok=True)
@@ -170,6 +172,84 @@ class StreamingLatentVisualMapper:
 
         self.model: Optional[UnsupervisedLatentMapper] = None
         self.auto_config: Optional[AutoConfig] = None
+        self.regime_centroids: Optional[np.ndarray] = None
+        self.regime_counts: Optional[np.ndarray] = None
+        self.latest_regime_id: Optional[int] = None
+        self.latest_regime_confidence: float = 0.0
+
+    def _bottleneck_batch(self, z_batch: np.ndarray) -> np.ndarray:
+        if self.model is None:
+            raise RuntimeError("Model is not initialized. Run warmup_train(...) or load().")
+        z_batch = np.asarray(z_batch, dtype=np.float32)
+        if z_batch.ndim != 2 or z_batch.shape[1] != self.pca_dim:
+            raise ValueError(f"Expected z_batch shape (N, {self.pca_dim}).")
+        h = self.model.encoder(z_batch, training=False)
+        return np.asarray(h.numpy(), dtype=np.float32)
+
+    def _initialize_regimes(self, z_sequence: np.ndarray):
+        h = self._bottleneck_batch(z_sequence)
+        if h.shape[0] == 0:
+            return
+
+        order = np.argsort(h[:, 0])
+        ordered = h[order]
+        pick_idx = np.linspace(0, max(0, ordered.shape[0] - 1), self.n_regimes).astype(int)
+        centroids = ordered[pick_idx]
+
+        if centroids.shape[0] < self.n_regimes:
+            repeats = self.n_regimes - centroids.shape[0]
+            centroids = np.vstack([centroids, np.repeat(centroids[-1:], repeats, axis=0)])
+
+        self.regime_centroids = np.asarray(centroids, dtype=np.float32)
+        self.regime_counts = np.ones((self.n_regimes,), dtype=np.float32)
+
+    def _assign_regime(self, h_t: np.ndarray) -> tuple[int, float]:
+        if self.regime_centroids is None:
+            raise RuntimeError("Regime centroids are not initialized.")
+
+        diff = self.regime_centroids - h_t[None, :]
+        distances = np.linalg.norm(diff, axis=1)
+        regime_id = int(np.argmin(distances))
+        best = float(distances[regime_id])
+        spread = float(np.mean(distances)) + 1e-6
+        confidence = float(1.0 / (1.0 + best / spread))
+        return regime_id, confidence
+
+    def _update_regime_centroid(self, regime_id: int, h_t: np.ndarray):
+        if self.regime_centroids is None or self.regime_counts is None:
+            return
+
+        self.regime_counts[regime_id] += 1.0
+        adaptive_lr = max(0.02, 1.0 / float(self.regime_counts[regime_id]))
+        self.regime_centroids[regime_id] = (
+            (1.0 - adaptive_lr) * self.regime_centroids[regime_id] + adaptive_lr * h_t
+        )
+
+    def _online_regime_step(self, z_t: np.ndarray):
+        if self.model is None:
+            return
+
+        if self.regime_centroids is None:
+            if len(self.stream_buffer) >= max(24, self.n_regimes * 8):
+                boot = np.asarray(list(self.stream_buffer), dtype=np.float32)
+                self._initialize_regimes(boot)
+            else:
+                self.latest_regime_id = None
+                self.latest_regime_confidence = 0.0
+                return
+
+        h_t = self._bottleneck_batch(np.asarray(z_t, dtype=np.float32).reshape(1, -1))[0]
+        regime_id, confidence = self._assign_regime(h_t)
+        self._update_regime_centroid(regime_id, h_t)
+        self.latest_regime_id = regime_id
+        self.latest_regime_confidence = confidence
+
+    def get_latest_regime_info(self) -> Dict[str, Any]:
+        return {
+            "regime_id": self.latest_regime_id,
+            "confidence": float(self.latest_regime_confidence),
+            "n_regimes": int(self.n_regimes),
+        }
 
     def _auto_choose_config(self, z_train: np.ndarray) -> AutoConfig:
         z_std = float(np.std(z_train))
@@ -240,11 +320,12 @@ class StreamingLatentVisualMapper:
         self._build_model(cfg)
 
         self.model.fit(z_sequence, epochs=epochs, batch_size=batch_size, shuffle=False, verbose=verbose)
-        self.save()
-
         self.stream_buffer.clear()
         for row in z_sequence[-self.stream_buffer.maxlen:]:
             self.stream_buffer.append(np.asarray(row, dtype=np.float32))
+
+        self._initialize_regimes(z_sequence)
+        self.save()
 
     def partial_update(self, epochs: int = 2, batch_size: int = 32, verbose: int = 0):
         if self.model is None:
@@ -294,6 +375,8 @@ class StreamingLatentVisualMapper:
         if self.step_count % self.train_every == 0:
             self.partial_update(epochs=1, batch_size=32, verbose=0)
 
+        self._online_regime_step(z_t)
+
         return self.latent_to_visual_parameters(z_t)
 
     def save(self):
@@ -304,6 +387,7 @@ class StreamingLatentVisualMapper:
         config_payload = {
             "pca_dim": self.pca_dim,
             "param_names": self.param_names,
+            "n_regimes": self.n_regimes,
             "auto_config": {
                 "activation": self.auto_config.activation,
                 "optimizer_name": self.auto_config.optimizer_name,
@@ -311,6 +395,12 @@ class StreamingLatentVisualMapper:
                 "l2_strength": self.auto_config.l2_strength,
                 "hidden_units": list(self.auto_config.hidden_units),
                 "bottleneck_dim": self.auto_config.bottleneck_dim,
+            },
+            "regime_state": {
+                "centroids": self.regime_centroids.tolist() if self.regime_centroids is not None else None,
+                "counts": self.regime_counts.tolist() if self.regime_counts is not None else None,
+                "latest_regime_id": self.latest_regime_id,
+                "latest_regime_confidence": float(self.latest_regime_confidence),
             },
         }
         self.config_path.write_text(json.dumps(config_payload, indent=2), encoding="utf-8")
@@ -320,6 +410,7 @@ class StreamingLatentVisualMapper:
             return False
 
         payload = json.loads(self.config_path.read_text(encoding="utf-8"))
+        self.n_regimes = int(payload.get("n_regimes", self.n_regimes))
         cfg_raw = payload["auto_config"]
         cfg = AutoConfig(
             activation=cfg_raw["activation"],
@@ -332,6 +423,22 @@ class StreamingLatentVisualMapper:
 
         self._build_model(cfg)
         self.model.load_weights(str(self.weights_path))
+
+        regime_state = payload.get("regime_state", {})
+        centroids = regime_state.get("centroids") if isinstance(regime_state, dict) else None
+        counts = regime_state.get("counts") if isinstance(regime_state, dict) else None
+
+        if centroids is not None:
+            arr = np.asarray(centroids, dtype=np.float32)
+            if arr.ndim == 2 and arr.shape[0] == self.n_regimes:
+                self.regime_centroids = arr
+        if counts is not None:
+            arr = np.asarray(counts, dtype=np.float32).reshape(-1)
+            if arr.shape[0] == self.n_regimes:
+                self.regime_counts = arr
+
+        self.latest_regime_id = regime_state.get("latest_regime_id") if isinstance(regime_state, dict) else None
+        self.latest_regime_confidence = float(regime_state.get("latest_regime_confidence", 0.0)) if isinstance(regime_state, dict) else 0.0
         return True
 
 

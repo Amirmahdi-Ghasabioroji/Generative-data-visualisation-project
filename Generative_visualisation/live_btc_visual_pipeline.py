@@ -59,6 +59,11 @@ class LiveBTCVisualBridge:
 
         self.pca_warmup: Deque[np.ndarray] = deque(maxlen=max(WARMUP_POINTS * 2, 192))
         self.prev_latent: Optional[np.ndarray] = None
+        self.last_regime_info: Dict[str, object] = {
+            "regime_id": None,
+            "confidence": 0.0,
+            "n_regimes": 0,
+        }
         self.visual_engine = VisualEngine()
 
     def _try_warmup(self):
@@ -95,6 +100,7 @@ class LiveBTCVisualBridge:
             params = traversal[-1]
 
         self.prev_latent = z_t
+        self.last_regime_info = self.mapper.get_latest_regime_info()
         return params
 
 
@@ -142,7 +148,17 @@ async def stream_btc_visual_parameters() -> None:
                     continue
 
                 bridge.visual_engine.render(visual_params)
-                print(f"[VISUAL] {', '.join(f'{k}={v:.3f}' for k, v in visual_params.items())}")
+                regime_id = bridge.last_regime_info.get("regime_id")
+                regime_conf = float(bridge.last_regime_info.get("confidence", 0.0))
+                n_regimes = int(bridge.last_regime_info.get("n_regimes", 0))
+                regime_label = (
+                    f"R{regime_id}/{n_regimes} conf={regime_conf:.3f}"
+                    if regime_id is not None and n_regimes > 0
+                    else "R?/?: warming"
+                )
+                print(
+                    f"[VISUAL] {', '.join(f'{k}={v:.3f}' for k, v in visual_params.items())} | {regime_label}"
+                )
 
     except KeyboardInterrupt:
         print("\n[STOP] Interrupted by user.")
