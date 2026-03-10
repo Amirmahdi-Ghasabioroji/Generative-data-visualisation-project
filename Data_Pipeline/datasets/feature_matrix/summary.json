@@ -1,0 +1,64 @@
+{
+  "timestamp": "2026-03-10T00:16:13+00:00",
+  "market_cols": [
+    "log_return_close",
+    "high_low_range_pct",
+    "rv_6",
+    "rv_12",
+    "log_volume",
+    "volume_z_48",
+    "number_of_trades",
+    "volume_per_trade",
+    "taker_ratio",
+    "delta_taker_ratio",
+    "ema_gap_6_24",
+    "rsi_14"
+  ],
+  "social_cols": [
+    "post_count",
+    "unique_authors",
+    "engagement_sum",
+    "like_mean",
+    "repost_mean",
+    "reply_mean",
+    "bullish_hits_sum",
+    "bearish_hits_sum",
+    "sentiment_net",
+    "bull_bear_ratio",
+    "word_count_mean",
+    "social_empty_flag"
+  ],
+  "cross_cols": [
+    "sentiment_net_x_return",
+    "post_count_x_volatility",
+    "engagement_x_volume"
+  ],
+  "shapes": {
+    "market_features": [
+      4,
+      12
+    ],
+    "social_features": [
+      4,
+      12
+    ],
+    "cross_features": [
+      4,
+      3
+    ]
+  },
+  "splits": {
+    "n_total": 4,
+    "n_train": 2,
+    "n_val": 1,
+    "n_test": 1,
+    "i_val": 2,
+    "i_test": 3
+  },
+  "artifacts": {
+    "market_features": "Data_Pipeline/datasets/feature_matrix/market_features.npy",
+    "social_features": "Data_Pipeline/datasets/feature_matrix/social_features.npy",
+    "cross_features": "Data_Pipeline/datasets/feature_matrix/cross_features.npy",
+    "timestamps": "Data_Pipeline/datasets/feature_matrix/timestamps.npy"
+  }
+}
