@@ -16,7 +16,7 @@ import csv
 import json
 import getpass
 from datetime import datetime
-from pathlib import Pathl
+from pathlib import Path
 
 import numpy as np
 from atproto import Client
