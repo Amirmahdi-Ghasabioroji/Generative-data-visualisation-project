@@ -1,0 +1,21 @@
+{
+  "pca_dim": 3,
+  "param_names": [
+    "motion_intensity",
+    "particle_density",
+    "distortion_strength",
+    "noise_scale",
+    "color_dynamics"
+  ],
+  "auto_config": {
+    "activation": "tanh",
+    "optimizer_name": "adam",
+    "learning_rate": 0.001,
+    "l2_strength": 0.0005,
+    "hidden_units": [
+      24,
+      16
+    ],
+    "bottleneck_dim": 2
+  }
+}

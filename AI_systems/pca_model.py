@@ -8,7 +8,6 @@ Covers: Fit, Transform, Fit+Transform, Inverse Transform
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import cm
-from matplotlib.widgets import Button
 from mpl_toolkits.mplot3d import Axes3D  # Needed for 3D plotting
 
 # ─────────────────────────────────────────────────────────────
@@ -31,7 +30,6 @@ class PCA:
         self._fig = None
         self._ax = None
         self._ax_3d = None
-        self._ax_2d = None
         self._ax_scree = None
         self._ax_error = None
         self._scatter = None
@@ -41,9 +39,6 @@ class PCA:
         self._view_cbar_mode = None
         self._axis_limits = None
         self._error_history = []
-        self._view_mode = "3d"
-        self._toggle_button_ax = None
-        self._toggle_button = None
         self._latest_X_reduced = None
         self._latest_title = "PCA: 3D Projection"
         self._latest_point_size = 20
@@ -336,35 +331,6 @@ class PCA:
 
         self._ax_3d.set_title(title, pad=12, fontsize=12, color="white")
 
-    def _update_2d_hexbin(self, X_reduced: np.ndarray, title: str):
-        x_vals = X_reduced[:, 0]
-        y_vals = X_reduced[:, 1]
-
-        ax = self._ax_2d
-        ax.cla()
-        ax.set_facecolor("#111111")
-        ax.grid(alpha=0.25)
-        ax.set_xlabel("PC1", fontsize=10, color="white")
-        ax.set_ylabel("PC2", fontsize=10, color="white")
-        ax.set_title(f"{title} — 2D Density", pad=10, fontsize=11, color="white")
-        ax.tick_params(colors="white", labelsize=8)
-
-        hb = ax.hexbin(x_vals, y_vals, gridsize=35, mincnt=1, cmap="viridis")
-        ax.scatter([x_vals[-1]], [y_vals[-1]], c="white", edgecolor="black", s=45, zorder=10)
-
-        if self._view_cbar_mode != "2d":
-            if self._view_cbar is not None:
-                try:
-                    self._view_cbar.remove()
-                except Exception:
-                    pass
-            self._view_cbar = self._fig.colorbar(hb, ax=ax, pad=0.02, fraction=0.04)
-            self._view_cbar.set_label("Points per bin", color="white", fontsize=9)
-            self._view_cbar.ax.tick_params(colors="white", labelsize=8)
-            self._view_cbar_mode = "2d"
-        else:
-            self._view_cbar.update_normal(hb)
-
     def _update_scree(self):
         ax = self._ax_scree
         ax.cla()
@@ -423,47 +389,8 @@ class PCA:
         self._ax_3d.set_zlabel("PC3", fontsize=10)
         self._ax_3d.grid(alpha=0.25)
 
-        self._ax_2d = self._fig.add_subplot(gs[:, 0])
-        self._ax_2d.set_visible(False)
-
         self._ax_scree = self._fig.add_subplot(gs[0, 1])
         self._ax_error = self._fig.add_subplot(gs[1, 1])
-
-        # ── Toggle button — bright blue, bold white text, easy to read ──
-        self._toggle_button_ax = self._fig.add_axes([0.43, 0.915, 0.14, 0.058])
-        self._toggle_button = Button(
-            self._toggle_button_ax,
-            "Switch to 2D",
-            color="#2979ff",
-            hovercolor="#5c9eff",
-        )
-        self._toggle_button.label.set_color("white")
-        self._toggle_button.label.set_fontsize(11)
-        self._toggle_button.label.set_fontweight("bold")
-        self._toggle_button.on_clicked(self._toggle_projection)
-
-    def _apply_view_mode(self):
-        if self._view_mode == "3d":
-            self._ax_3d.set_visible(True)
-            self._ax_2d.set_visible(False)
-            if self._toggle_button is not None:
-                self._toggle_button.label.set_text("Switch to 2D")
-        else:
-            self._ax_3d.set_visible(False)
-            self._ax_2d.set_visible(True)
-            if self._toggle_button is not None:
-                self._toggle_button.label.set_text("Switch to 3D")
-
-    def _toggle_projection(self, _event):
-        self._view_mode = "2d" if self._view_mode == "3d" else "3d"
-        self._apply_view_mode()
-        if self._latest_X_reduced is not None:
-            if self._view_mode == "3d":
-                self._update_3d_scatter(self._latest_X_reduced, self._latest_title, self._latest_point_size)
-            else:
-                self._update_2d_hexbin(self._latest_X_reduced, self._latest_title)
-        if self._fig is not None:
-            self._fig.canvas.draw_idle()
 
     # ─────────────────────────────────────────────────────────────
     # STAGE 10: MAIN UNIFIED PLOT METHOD
@@ -487,13 +414,9 @@ class PCA:
         self._latest_title = title
         self._latest_point_size = point_size
 
-        if self._view_mode == "3d":
-            self._update_3d_scatter(X_reduced, title, point_size)
-        else:
-            self._update_2d_hexbin(X_reduced, title)
+        self._update_3d_scatter(X_reduced, title, point_size)
         self._update_scree()
         self._update_reconstruction_error(X_original)
-        self._apply_view_mode()
 
         self._fig.canvas.draw_idle()
         plt.pause(0.001)

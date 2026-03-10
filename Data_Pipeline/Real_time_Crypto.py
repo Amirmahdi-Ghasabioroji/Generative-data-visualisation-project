@@ -1,6 +1,6 @@
 """
 Binance Real-Time Data Pipeline — Group J
-Symbols: BTCUSDT + ETHUSDT
+Symbols: BTCUSDT
 Stack: numpy only (no pandas)
 Covers: FR1 (live ingestion), FR4 (real-time updates), NFR1 (<500ms latency)
 """
@@ -19,8 +19,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
-from AI_systems import pca_model
-
 # ─────────────────────────────────────────────────────────────
 # STAGE 1: CONFIGURATION
 # What it does: Defines what you're collecting and how much.
@@ -29,11 +27,9 @@ from AI_systems import pca_model
 # ─────────────────────────────────────────────────────────────
 
 # Symbols to track
-SYMBOLS = ['BTCUSDT', 'ETHUSDT']
+SYMBOLS = ['BTCUSDT']
 INTERVAL = "1s"
 OUTPUT_DIR = "binance_realtime"
-PCA_N_COMPONENTS = 3
-ENABLE_PCA_PLOT = True
 # Buffer size for real-time data 
 BUFFER_SIZE = 300
 
@@ -53,14 +49,11 @@ FEATURE_COLS = [
 # streams write into concurrently.
 # Why it matters: asyncio.gather() runs both streams at the same
 # time — they share this buffer so the ML layer always sees a
-# combined BTC+ETH snapshot, not just one coin.
+# live BTC snapshot.
 # ─────────────────────────────────────────────────────────────
 
 # One deque per symbol — stores raw row dicts of completed candles
 buffers = {symbol: deque(maxlen=BUFFER_SIZE) for symbol in SYMBOLS}
-
-# One PCA model per symbol (from AI_systems/pca_model.py)
-pca_models = {symbol: pca_model.PCA(n_components=PCA_N_COMPONENTS) for symbol in SYMBOLS}
 
 
 # ─────────────────────────────────────────────────────────────
@@ -169,27 +162,6 @@ def build_feature_matrix(symbol: str) -> np.ndarray:
     if np.any(constant_mask):
         matrix[:, constant_mask] = 0.5
     return matrix  # Shape: (N, 10) 
-
-
-def run_pca(symbol: str, matrix: np.ndarray) -> np.ndarray | None:
-    """
-    Run PCA using AI_systems/pca_model.py on the current symbol matrix.
-    Returns the latest reduced row, or None if there isn't enough data.
-    """
-    min_rows = max(PCA_N_COMPONENTS + 1, 2)
-    if matrix.shape[0] < min_rows:
-        return None
-
-    model = pca_models[symbol]
-    plot_title = f"{symbol} PCA 3D (rolling {matrix.shape[0]} rows)"
-
-    if ENABLE_PCA_PLOT:
-        reduced = model.fit_transform_plot(matrix, title=plot_title)
-    else:
-        model.fit(matrix)
-        reduced = model.transform(matrix)
-
-    return reduced[-1]
 
 
 # ─────────────────────────────────────────────────────────────
@@ -349,21 +321,13 @@ async def stream_symbol(bm: BinanceSocketManager, symbol: str) -> None:
                 f"Matrix: {matrix.shape}"
             )
 
-            pca_latest = run_pca(symbol, matrix)
-            if pca_latest is None:
-                min_rows = max(PCA_N_COMPONENTS + 1, 2)
-                print(f"[{symbol}] PCA waiting: need >= {min_rows} rows, have {matrix.shape[0]}")
-            else:
-                print(f"[{symbol}] PCA latest ({PCA_N_COMPONENTS}D): {np.round(pca_latest, 4).tolist()}")
-
 # ─────────────────────────────────────────────────────────────
 # STAGE 7: CONCURRENT STREAM MANAGER
 # What it does: Creates one Binance client, then uses
-# asyncio.gather() to run both symbol streams in parallel.
+# asyncio.gather() to run symbol streams in parallel.
 # Why it matters: gather() is the correct way to run multiple
 # async streams — they run concurrently in the same event loop
-# without blocking each other. This satisfies NFR1 (<500ms)
-# because neither stream waits for the other.
+# without blocking each other.
 # ─────────────────────────────────────────────────────────────
 
 async def run_pipeline() -> None:
@@ -376,7 +340,6 @@ async def run_pipeline() -> None:
     print(f"  Symbols : {', '.join(SYMBOLS)}")
     print(f"  Interval: {INTERVAL}")
     print(f"  Output  : {OUTPUT_DIR}/")
-    print(f"  PCA Plot: {'ON' if ENABLE_PCA_PLOT else 'OFF'}")
     print("=" * 50)
 
     preload_buffers_from_csv(OUTPUT_DIR, BUFFER_SIZE)
@@ -386,11 +349,8 @@ async def run_pipeline() -> None:
     bm = BinanceSocketManager(client)
 
     try:
-        # Run BTC and ETH streams concurrently
-        await asyncio.gather(
-            stream_symbol(bm, "BTCUSDT"),
-            stream_symbol(bm, "ETHUSDT"),
-        )
+        # Run configured symbol streams concurrently (currently BTC only)
+        await asyncio.gather(*(stream_symbol(bm, symbol) for symbol in SYMBOLS))
     except KeyboardInterrupt:
         print("\n[STOP] Interrupted by user. Closing connection...")
     finally:

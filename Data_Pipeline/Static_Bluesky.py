@@ -24,6 +24,8 @@ from sentence_transformers import SentenceTransformer
 from sklearn.preprocessing import StandardScaler
 import os
 import sys
+from sklearn.cluster import KMeans
+from sklearn.metrics import silhouette_score
 
 # ─────────────────────────────────────────────────────────────
 # STAGE 1: ENVIRONMENT SETUP
@@ -46,7 +48,6 @@ except Exception:
     pass
 
 from AI_systems.pca_model import PCA
-
 
 # ─────────────────────────────────────────────────────────────
 # STAGE 2: AUTHENTICATION + INGESTION
@@ -526,23 +527,36 @@ def run_static_bluesky_pipeline(
             plt.show(block=True)
         except Exception as e:
             print(f"[i] Could not display PCA plot in this environment: {e}")
+            
+   # ── Clustering + Quantitative Metrics (Silhouette + Entropy) ──
+    kmeans = KMeans(n_clusters=3, random_state=42)
 
-    summary = save_static_dataset(
-        posts=posts,
-        X=X,
-        X_reduced=X_reduced,
-        query=query,
-        output_dir=output_dir,
-    )
+    if show_plot and n_components >= 3:
+        X_reduced = pca.fit_transform(X)           # fit without plotting yet
+        labels = kmeans.fit_predict(X_reduced)
 
-    print("[✓] Static dataset snapshot saved")
-    print(f"    query: {summary['query']}")
-    print(f"    posts: {summary['num_posts']}")
-    print(f"    features: {summary['feature_shape']}")
-    print(f"    pca_3d: {summary['pca_shape']}")
-    print(f"    summary file: {summary['artifacts']}")
-    return summary
+        sil_score = silhouette_score(X_reduced, labels)
+        cluster_probs = np.bincount(labels) / len(labels)
+        cluster_probs = cluster_probs[cluster_probs > 0]
+        ent = -(cluster_probs * np.log2(cluster_probs)).sum()
 
+        pca.plot_unified(X, X_reduced,             # now plot with labels + metrics
+                        title="Bluesky Static Dataset PCA (Unified)",
+                        labels=labels,
+                        sil_score=sil_score,
+                        entropy=ent)
+    else:
+        X_reduced = pca.fit_transform(X)
+        labels = kmeans.fit_predict(X_reduced)
+
+        sil_score = silhouette_score(X_reduced, labels)
+        cluster_probs = np.bincount(labels) / len(labels)
+        cluster_probs = cluster_probs[cluster_probs > 0]
+        ent = -(cluster_probs * np.log2(cluster_probs)).sum()
+
+    print(f"[✓] Silhouette Score: {sil_score:.4f}")
+    print(f"[✓] Cluster Entropy:  {ent:.4f}")
+    print(f"[i] Cluster Sizes:    {np.bincount(labels)}")
 
 # ─────────────────────────────────────────────────────────────
 # STAGE 7: SCRIPT ENTRYPOINT
@@ -553,3 +567,8 @@ def run_static_bluesky_pipeline(
 
 if __name__ == "__main__":
     run_static_bluesky_pipeline(query="generative art", limit=300, n_components=3)
+
+
+
+
+    
