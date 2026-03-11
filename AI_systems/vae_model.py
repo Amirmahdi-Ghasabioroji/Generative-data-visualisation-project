@@ -15,11 +15,23 @@ from tensorflow.keras import layers
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# ── HRIDITA: REPARAMETERISATION TRICK ────────────────────────────────────────
+
 # Add the Sampling layer class here.
 # It takes [z_mean, z_log_var] as input and returns a sampled latent vector z.
 # Formula: z = z_mean + eps * exp(0.5 * z_log_var)  where eps ~ N(0, I)
 # This needs to be a keras Layer subclass with a call() method.
+class Sampling(layers.Layer):
+    """
+    Sampling layer using the reparameterisation trick.
+    z = z_mean + eps * exp(0.5 * z_log_var)
+    where eps ~ N(0, I)
+    """
+
+    def call(self, inputs):
+        z_mean, z_log_var = inputs
+        epsilon = tf.random.normal(shape=tf.shape(z_mean))
+        return z_mean + tf.exp(0.5 * z_log_var) * epsilon
+
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
@@ -53,7 +65,6 @@ class VAE(keras.Model):
         self.encoder = self._build_encoder()
         self.decoder = self._build_decoder()
 
-        # ── HRIDITA: LOSS TRACKERS ────────────────────────────────────────────
         # Add three keras.metrics.Mean trackers here:
         #   self.total_loss_tracker
         #   self.reconstruction_loss_tracker
@@ -105,20 +116,18 @@ class VAE(keras.Model):
         return keras.Model(inputs, outputs, name="decoder")
 
     # ═══════════════════════════════════════════════════════════════════════════
-    # ── HRIDITA: FORWARD PASS ────────────────────────────────────────────────
     # Replace this placeholder with the full forward pass:
     #   1. Pass inputs through self.encoder → get z_mean, z_log_var
     #   2. Pass [z_mean, z_log_var] through Sampling layer → get z
     #   3. Pass z through self.decoder → get reconstruction
     #   4. Return reconstruction
-    # ═══════════════════════════════════════════════════════════════════════════
     def call(self, inputs):
-        # Placeholder — Hridita replace this
         z_mean, z_log_var = self.encoder(inputs)
-        return z_mean
-
+        z = Sampling()([z_mean, z_log_var])
+        reconstruction = self.decoder(z)
+        return reconstruction
     # ═══════════════════════════════════════════════════════════════════════════
-    # ── HRIDITA: TRAINING STEP ───────────────────────────────────────────────
+    
     # Add a custom train_step(self, data) method here.
     # Inside it should:
     #   1. Use tf.GradientTape to track gradients
@@ -129,23 +138,82 @@ class VAE(keras.Model):
     #   6. Apply gradients via self.optimizer
     #   7. Update the three loss trackers
     #   8. Return a dict of the three loss values
+    def train_step(self, data):
+        if isinstance(data, tuple):
+            data = data[0]
+
+        with tf.GradientTape() as tape:
+            z_mean, z_log_var = self.encoder(data)
+            z = Sampling()([z_mean, z_log_var])
+            reconstruction = self.decoder(z)
+
+            reconstruction_loss = tf.reduce_mean(
+                tf.reduce_sum(
+                    keras.losses.mse(data, reconstruction), axis=1
+                )
+            )
+
+            kl_loss = -0.5 * tf.reduce_mean(
+                tf.reduce_sum(
+                    1 + z_log_var - tf.square(z_mean) - tf.exp(z_log_var), axis=1
+                )
+            )
+
+            total_loss = reconstruction_loss + kl_loss
+
+        grads = tape.gradient(total_loss, self.trainable_weights)
+        self.optimizer.apply_gradients(zip(grads, self.trainable_weights))
+
+        self.total_loss_tracker.update_state(total_loss)
+        self.reconstruction_loss_tracker.update_state(reconstruction_loss)
+        self.kl_loss_tracker.update_state(kl_loss)
+
+        return {
+            "loss": self.total_loss_tracker.result(),
+            "reconstruction_loss": self.reconstruction_loss_tracker.result(),
+            "kl_loss": self.kl_loss_tracker.result(),
+        }
     # ═══════════════════════════════════════════════════════════════════════════
 
     # ═══════════════════════════════════════════════════════════════════════════
-    # ── HRIDITA: METRICS PROPERTY ────────────────────────────────────────────
     # Add a @property called metrics that returns a list of the three trackers.
     # Keras uses this to reset them at the start of each epoch.
+     
+    @property
+        def metrics(self):
+            return [
+                self.total_loss_tracker,
+                self.reconstruction_loss_tracker,
+                self.kl_loss_tracker,
+            ]
+
     # ═══════════════════════════════════════════════════════════════════════════
 
     # ═══════════════════════════════════════════════════════════════════════════
-    # ── HRIDITA: FIT / TRAINING LOOP ─────────────────────────────────────────
+    
     # Add a fit(self, X, epochs=50, batch_size=32) method here.
     # It should:
     #   1. Cast X to tf.float32
     #   2. Compile the model with Adam optimiser
     #   3. Call super().fit() to run the training loop
     #   4. Print a confirmation when done
-    # ═══════════════════════════════════════════════════════════════════════════
+
+    def fit(self, X, epochs=50, batch_size=32):
+        X = tf.cast(X, tf.float32)
+
+        self.compile(optimizer=keras.optimizers.Adam())
+
+        super().fit(
+            X,
+            epochs=epochs,
+            batch_size=batch_size,
+            shuffle=True,
+        )
+
+        print("[✓] VAE training complete")
+    
+
+
 
     # ═══════════════════════════════════════════════════════════════════════════
     # ENCODE
