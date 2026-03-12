@@ -180,12 +180,12 @@ class VAE(keras.Model):
     # Keras uses this to reset them at the start of each epoch.
      
     @property
-        def metrics(self):
-            return [
-                self.total_loss_tracker,
-                self.reconstruction_loss_tracker,
-                self.kl_loss_tracker,
-            ]
+    def metrics(self):
+        return [
+          self.total_loss_tracker,
+            self.reconstruction_loss_tracker,
+            self.kl_loss_tracker,
+                ]
 
     # ═══════════════════════════════════════════════════════════════════════════
 
