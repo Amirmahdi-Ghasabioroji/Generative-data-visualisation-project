@@ -1,9 +1,33 @@
 """
 Variational Autoencoder (VAE)
-Purpose: Compress high-dimensional feature matrices into a low-dimensional
-latent space for clustering, visualisation, and latent space traversal.
-Stack: TensorFlow + Keras + numpy
-Mode: Batch (train once on static dataset, encode for downstream use)
+Purpose: Compress the BTC market + Bluesky social feature matrix into a
+         low-dimensional latent space for clustering, visualisation, and
+         latent space traversal.
+Stack:   TensorFlow + Keras + numpy
+Mode:    Batch (train once on dataset, encode for downstream use)
+
+Input layout — flat concatenated vector built from feature_matrix.py output:
+    X = np.hstack([market_features, social_features, cross_features])
+    Default shape: (n_samples, 27)
+        market_features  → 12 cols  (log_return, RSI, volatility, volume, …)
+        social_features  → 12 cols  (post_count, sentiment, engagement, …)
+        cross_features   →  3 cols  (sentiment×return, post_count×rv, …)
+
+Architecture — dual-stream encoder, single decoder:
+    Market stream  : 12 → Dense(64,relu)→BN → Dense(32,relu)→BN  →  (32,)
+    Social stream  : 12 → Dense(64,relu)→BN → Dense(32,relu)→BN  →  (32,)
+    Cross stream   :  3 → Dense(16,relu)→BN                       →  (16,)
+    Merge          : Concat(80) → Dense(64,relu) → Dropout(0.1)
+    Latent heads   : z_mean(16), z_log_var(16)
+    Decoder        : 16 → Dense(64,relu)→BN → Dense(80,relu)→BN → Dense(27,linear)
+
+Why dual-stream:
+    Market (RSI, log-returns, volatility) and social (engagement, sentiment,
+    post counts) have completely different statistical distributions. Routing
+    them through separate Dense streams before merging lets each modality
+    build its own representation first. The merged latent space then captures
+    cross-modal relationships (e.g. sentiment diverging from price) without
+    one modality dominating the gradients.
 
 Dependencies:
     pip install tensorflow numpy
@@ -15,15 +39,13 @@ layers = tf.keras.layers
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# It takes [z_mean, z_log_var] as input and returns a sampled latent vector z.
-# Formula: z = z_mean + eps * exp(0.5 * z_log_var)  where eps ~ N(0, I)
-# This needs to be a keras Layer subclass with a call() method.
+# SAMPLING LAYER
+# Implements the reparameterisation trick so gradients can flow through
+# the stochastic sampling step during backpropagation.
+# Formula: z = z_mean + ε · exp(0.5 · z_log_var),  ε ~ N(0, I)
+# ═══════════════════════════════════════════════════════════════════════════════
 class Sampling(layers.Layer):
-    """
-    Sampling layer using the reparameterisation trick.
-    z = z_mean + eps * exp(0.5 * z_log_var)
-    where eps ~ N(0, I)
-    """
+    """Reparameterisation trick: z = z_mean + ε · exp(0.5 · z_log_var)."""
 
     def call(self, inputs):
         z_mean, z_log_var = inputs
@@ -34,92 +56,131 @@ class Sampling(layers.Layer):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# VAE CLASS
+# VAE
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class VAE(keras.Model):
     """
-    Variational Autoencoder for compressing high-dimensional feature matrices
-    into a low-dimensional latent space (latent_dim=32).
+    Dual-stream Variational Autoencoder for BTC market + Bluesky social data.
+
+    The encoder splits the flat input into three modality streams (market,
+    social, cross), processes each independently, then merges them into a
+    shared low-dimensional latent space. The decoder reconstructs the full
+    flat vector from the latent sample.
+
+    Parameters
+    ----------
+    market_dim   : number of market feature columns        (default 12)
+    social_dim   : number of social feature columns        (default 12)
+    cross_dim    : number of cross-modal feature columns   (default  3)
+    latent_dim   : latent space size                       (default 16)
+    dropout_rate : dropout on the encoder merge layer      (default 0.1)
     """
 
-    def __init__(self, input_dim: int, latent_dim: int = 32, **kwargs):
-        """
-        Initialises the VAE.
-
-        Parameters
-        ----------
-        input_dim  : size of the input feature vector (e.g. 399)
-        latent_dim : size of the compressed latent space (default 32)
-        beta       : weight on KL loss — set to input_dim/latent_dim so
-                     reconstruction and KL contribute equally (prevents
-                     posterior collapse)
-        """
+    def __init__(
+        self,
+        market_dim:   int   = 12,
+        social_dim:   int   = 12,
+        cross_dim:    int   = 3,
+        latent_dim:   int   = 16,
+        dropout_rate: float = 0.1,
+        **kwargs,
+    ):
         super().__init__(**kwargs)
-        self.input_dim  = input_dim
-        self.latent_dim = latent_dim
-        # Beta balances reconstruction vs KL — default keeps both terms roughly
-        # equal in magnitude: recon sums over input_dim, KL over latent_dim.
-        self.beta = input_dim / latent_dim
 
-        # Build encoder and decoder models
-        self.encoder = self._build_encoder()
-        self.decoder = self._build_decoder()
+        self.market_dim   = market_dim
+        self.social_dim   = social_dim
+        self.cross_dim    = cross_dim
+        self.input_dim    = market_dim + social_dim + cross_dim
+        self.latent_dim   = latent_dim
+        self.dropout_rate = dropout_rate
+
+        # β scales KL loss so its magnitude matches reconstruction loss.
+        # Reconstruction sums over input_dim dims, KL over latent_dim dims —
+        # without β the KL term is ~input_dim/latent_dim times too small,
+        # causing posterior collapse (encoder ignores the prior).
+        self.beta = self.input_dim / self.latent_dim
+
         self.sampling = Sampling()
+        self.encoder  = self._build_encoder()
+        self.decoder  = self._build_decoder()
 
-        self.total_loss_tracker = keras.metrics.Mean(name="loss")
+        self.total_loss_tracker          = keras.metrics.Mean(name="loss")
         self.reconstruction_loss_tracker = keras.metrics.Mean(name="reconstruction_loss")
-        self.kl_loss_tracker = keras.metrics.Mean(name="kl_loss")
+        self.kl_loss_tracker             = keras.metrics.Mean(name="kl_loss")
 
-    # ═══════════════════════════════════════════════════════════════════════════
+    # ─────────────────────────────────────────────────────────────────────────
     # ENCODER
-    # Compresses input (399 dims) down to two 32-dim vectors:
-    #   z_mean    — the mean of the latent distribution
-    #   z_log_var — the log variance of the latent distribution
-    # Architecture: 399 → Dense(256, relu) → Dense(128, relu) → z_mean, z_log_var
-    # ═══════════════════════════════════════════════════════════════════════════
+    # Three parallel streams handle each modality independently, then merge.
+    #
+    #  market_input (12) → Dense(64)→BN→Dense(32)→BN ─┐
+    #  social_input (12) → Dense(64)→BN→Dense(32)→BN ─┼─→ Concat(80)→Dense(64)→Dropout
+    #  cross_input  ( 3) → Dense(16)→BN              ─┘          │
+    #                                                    z_mean(16), z_log_var(16)
+    # ─────────────────────────────────────────────────────────────────────────
     def _build_encoder(self) -> keras.Model:
-        inputs    = keras.Input(shape=(self.input_dim,), name="encoder_input")
+        full_input = keras.Input(shape=(self.input_dim,), name="encoder_input")
 
-        # First hidden layer — compresses 399 → 256
-        x         = layers.Dense(256, activation="relu")(inputs)
+        # Slice the flat vector into modality windows
+        social_start = self.market_dim
+        social_end   = self.market_dim + self.social_dim
 
-        # Second hidden layer — compresses 256 → 128
-        x         = layers.Dense(128, activation="relu")(x)
+        market_in = full_input[:, :social_start]
+        social_in = full_input[:, social_start:social_end]
+        cross_in  = full_input[:, social_end:]
 
-        # Two output heads — both output 32-dim vectors
-        z_mean    = layers.Dense(self.latent_dim, name="z_mean")(x)
-        z_log_var = layers.Dense(self.latent_dim, name="z_log_var")(x)
+        # ── Market stream: 12 → 64 → 32 ──
+        m = layers.Dense(64, activation="relu", name="market_dense_1")(market_in)
+        m = layers.BatchNormalization(name="market_bn_1")(m)
+        m = layers.Dense(32, activation="relu", name="market_dense_2")(m)
+        m = layers.BatchNormalization(name="market_bn_2")(m)
 
-        return keras.Model(inputs, [z_mean, z_log_var], name="encoder")
+        # ── Social stream: 12 → 64 → 32 ──
+        s = layers.Dense(64, activation="relu", name="social_dense_1")(social_in)
+        s = layers.BatchNormalization(name="social_bn_1")(s)
+        s = layers.Dense(32, activation="relu", name="social_dense_2")(s)
+        s = layers.BatchNormalization(name="social_bn_2")(s)
 
-    # ═══════════════════════════════════════════════════════════════════════════
+        # ── Cross stream: 3 → 16 (smaller — derived interaction terms) ──
+        c = layers.Dense(16, activation="relu", name="cross_dense_1")(cross_in)
+        c = layers.BatchNormalization(name="cross_bn_1")(c)
+
+        # ── Merge: Concat(32+32+16=80) → Dense(64) → Dropout ──
+        merged = layers.Concatenate(name="modality_merge")([m, s, c])
+        merged = layers.Dense(64, activation="relu", name="merge_dense")(merged)
+        merged = layers.Dropout(self.dropout_rate, name="merge_dropout")(merged)
+
+        # ── Latent distribution heads ──
+        z_mean    = layers.Dense(self.latent_dim, name="z_mean")(merged)
+        z_log_var = layers.Dense(self.latent_dim, name="z_log_var")(merged)
+
+        return keras.Model(full_input, [z_mean, z_log_var], name="encoder")
+
+    # ─────────────────────────────────────────────────────────────────────────
     # DECODER
-    # Mirror image of the encoder — takes a 32-dim latent vector
-    # and expands it back up to 399 dims (the original input size)
-    # Architecture: 32 → Dense(128, relu) → Dense(256, relu) → 399
-    # ═══════════════════════════════════════════════════════════════════════════
+    # Single stream — latent space is already fused across modalities.
+    # Symmetric expansion back to full input_dim.
+    #
+    #  z(16) → Dense(64)→BN → Dense(80)→BN → Dense(27, linear)
+    # ─────────────────────────────────────────────────────────────────────────
     def _build_decoder(self) -> keras.Model:
-        inputs = keras.Input(shape=(self.latent_dim,), name="decoder_input")
+        z_input = keras.Input(shape=(self.latent_dim,), name="decoder_input")
 
-        # First hidden layer — expands 32 → 128
-        x      = layers.Dense(128, activation="relu")(inputs)
+        x = layers.Dense(64, activation="relu", name="dec_dense_1")(z_input)
+        x = layers.BatchNormalization(name="dec_bn_1")(x)
+        x = layers.Dense(80, activation="relu", name="dec_dense_2")(x)
+        x = layers.BatchNormalization(name="dec_bn_2")(x)
 
-        # Second hidden layer — expands 128 → 256
-        x      = layers.Dense(256, activation="relu")(x)
+        # Linear output — input features are continuous, not bounded to [0,1]
+        outputs = layers.Dense(
+            self.input_dim, activation="linear", name="decoder_output"
+        )(x)
 
-        # Output layer — expands back to original input size (399)
-        # Linear activation because input features are continuous (not 0-1)
-        outputs = layers.Dense(self.input_dim, activation="linear", name="decoder_output")(x)
+        return keras.Model(z_input, outputs, name="decoder")
 
-        return keras.Model(inputs, outputs, name="decoder")
-
-    # ═══════════════════════════════════════════════════════════════════════════
-    # Replace this placeholder with the full forward pass:
-    #   1. Pass inputs through self.encoder → get z_mean, z_log_var
-    #   2. Pass [z_mean, z_log_var] through Sampling layer → get z
-    #   3. Pass z through self.decoder → get reconstruction
-    #   4. Return reconstruction
+    # ─────────────────────────────────────────────────────────────────────────
+    # FORWARD PASS
+    # ─────────────────────────────────────────────────────────────────────────
     def call(self, inputs):
         z_mean, z_log_var = self.encoder(inputs)
         # Clip log-variance to prevent exp() overflow in Sampling and KL loss
@@ -127,18 +188,10 @@ class VAE(keras.Model):
         z = self.sampling([z_mean, z_log_var])
         reconstruction = self.decoder(z)
         return reconstruction
-    # ═══════════════════════════════════════════════════════════════════════════
-    
-    # Add a custom train_step(self, data) method here.
-    # Inside it should:
-    #   1. Use tf.GradientTape to track gradients
-    #   2. Run encoder → reparameterise → decoder
-    #   3. Compute reconstruction loss (MSE between input and reconstruction)
-    #   4. Compute KL divergence loss
-    #   5. Sum them into total_loss
-    #   6. Apply gradients via self.optimizer
-    #   7. Update the three loss trackers
-    #   8. Return a dict of the three loss values
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # TRAINING STEP
+    # ─────────────────────────────────────────────────────────────────────────
     def train_step(self, data):
         if isinstance(data, tuple):
             data = data[0]
@@ -162,8 +215,7 @@ class VAE(keras.Model):
                 )
             )
 
-            # Beta weighting keeps reconstruction and KL losses in the same
-            # magnitude range — prevents the KL term from being ignored
+            # β-weighted total loss — keeps both terms in the same magnitude range
             total_loss = reconstruction_loss + self.beta * kl_loss
 
         grads = tape.gradient(total_loss, self.trainable_weights)
@@ -174,62 +226,49 @@ class VAE(keras.Model):
         self.kl_loss_tracker.update_state(kl_loss)
 
         return {
-            "loss": self.total_loss_tracker.result(),
+            "loss":                self.total_loss_tracker.result(),
             "reconstruction_loss": self.reconstruction_loss_tracker.result(),
-            "kl_loss": self.kl_loss_tracker.result(),
+            "kl_loss":             self.kl_loss_tracker.result(),
         }
-    # ═══════════════════════════════════════════════════════════════════════════
 
-    # ═══════════════════════════════════════════════════════════════════════════
-    # Add a @property called metrics that returns a list of the three trackers.
-    # Keras uses this to reset them at the start of each epoch.
-     
+    # Keras uses this to reset metric trackers at the start of each epoch
     @property
     def metrics(self):
         return [
-          self.total_loss_tracker,
+            self.total_loss_tracker,
             self.reconstruction_loss_tracker,
             self.kl_loss_tracker,
-                ]
+        ]
 
-    # ═══════════════════════════════════════════════════════════════════════════
+    # ─────────────────────────────────────────────────────────────────────────
+    # FIT
+    # ─────────────────────────────────────────────────────────────────────────
+    def fit(self, X, epochs=100, batch_size=64):
+        """
+        Train the VAE.
 
-    # ═══════════════════════════════════════════════════════════════════════════
-    
-    # Add a fit(self, X, epochs=50, batch_size=32) method here.
-    # It should:
-    #   1. Cast X to tf.float32
-    #   2. Compile the model with Adam optimiser
-    #   3. Call super().fit() to run the training loop
-    #   4. Print a confirmation when done
-
-    def fit(self, X, epochs=50, batch_size=32):
+        Parameters
+        ----------
+        X : np.ndarray of shape (n_samples, input_dim)
+            Concatenated [market | social | cross] feature matrix.
+            Build from Data_Pipeline/feature_matrix.py output:
+                X = np.hstack([market_features, social_features, cross_features])
+        epochs     : training epochs (default 100)
+        batch_size : samples per gradient step (default 64)
+        """
         X = tf.cast(X, tf.float32)
-
-        self.compile(optimizer=keras.optimizers.Adam())
-
-        super().fit(
-            X,
-            epochs=epochs,
-            batch_size=batch_size,
-            shuffle=True,
-        )
-
+        self.compile(optimizer=keras.optimizers.Adam(learning_rate=1e-3))
+        super().fit(X, epochs=epochs, batch_size=batch_size, shuffle=True)
         print("[✓] VAE training complete")
-    
 
-
-
-    # ═══════════════════════════════════════════════════════════════════════════
+    # ─────────────────────────────────────────────────────────────────────────
     # ENCODE
-    # Exposes the latent mean vectors for use in Static_Bluesky.py.
-    # Returns z_mean (not sampled z) — more stable for clustering/visualisation.
-    # Shape: (n_samples, latent_dim) e.g. (300, 32)
-    # ═══════════════════════════════════════════════════════════════════════════
+    # Returns z_mean — more stable than sampled z for downstream clustering
+    # and visualisation because it has no stochastic noise.
+    # ─────────────────────────────────────────────────────────────────────────
     def encode(self, X: np.ndarray) -> np.ndarray:
         """
-        Encodes input X into latent space.
-        Call this after training to get vectors for clustering + visualisation.
+        Encode X into latent space. Call after training.
 
         Parameters
         ----------
@@ -239,39 +278,46 @@ class VAE(keras.Model):
         -------
         np.ndarray of shape (n_samples, latent_dim)
         """
-        X_tensor   = tf.cast(X, tf.float32)
-        z_mean, _  = self.encoder(X_tensor)
+        z_mean, _ = self.encoder(tf.cast(X, tf.float32))
         return z_mean.numpy()
 
-    # ═══════════════════════════════════════════════════════════════════════════
-    # SAVE WEIGHTS
-    # Saves the trained model weights to disk so training doesn't need
-    # to restart from scratch every run.
-    # ═══════════════════════════════════════════════════════════════════════════
+    # ─────────────────────────────────────────────────────────────────────────
+    # SAVE / LOAD WEIGHTS
+    # ─────────────────────────────────────────────────────────────────────────
     def save_weights(self, filepath: str):
-        """
-        Save trained weights to filepath.
-        Example: vae.save_weights('AI_systems/vae_weights')
-        """
+        """Save trained weights.  e.g. vae.save_weights('AI_systems/vae_weights')"""
         super().save_weights(filepath)
         print(f"[✓] VAE weights saved → {filepath}")
 
-    # ═══════════════════════════════════════════════════════════════════════════
-    # LOAD WEIGHTS
-    # Loads previously saved weights back into the model.
-    # Runs a dummy forward pass first because Keras needs to build the
-    # computation graph before it can load weights into it.
-    # ═══════════════════════════════════════════════════════════════════════════
     def load_weights(self, filepath: str):
-        """
-        Load previously saved weights from filepath.
-        Example: vae.load_weights('AI_systems/vae_weights')
-        """
-        # Dummy pass to build the graph before loading weights
+        """Load previously saved weights.  e.g. vae.load_weights('AI_systems/vae_weights')"""
+        # Dummy forward pass builds the computation graph before weight loading
         dummy = tf.zeros((1, self.input_dim))
         self(dummy)
         super().load_weights(filepath)
         print(f"[✓] VAE weights loaded ← {filepath}")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+if __name__ == "__main__":
+    tf.random.set_seed(42)
+    np.random.seed(42)
 
+    print("=" * 60)
+    print("  VAE smoke test  —  market + social + cross  (27-dim)")
+    print("=" * 60)
+
+    # Simulate 500 samples of 30-minute BTC windows
+    n = 500
+    market = np.random.normal(size=(n, 12)).astype(np.float32)
+    social = np.random.normal(size=(n, 12)).astype(np.float32)
+    cross  = np.random.normal(size=(n,  3)).astype(np.float32)
+    X = np.hstack([market, social, cross])   # shape (500, 27)
+
+    vae = VAE(market_dim=12, social_dim=12, cross_dim=3, latent_dim=16)
+    vae.fit(X, epochs=2, batch_size=64)
+
+    latent = vae.encode(X)
+    print(f"[✓] Input shape  : {X.shape}")
+    print(f"[✓] Latent shape : {latent.shape}")   # expect (500, 16)
+    print("[✓] Done")
