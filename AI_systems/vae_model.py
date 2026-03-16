@@ -10,13 +10,11 @@ Dependencies:
 """
 import numpy as np
 import tensorflow as tf
-from tensorflow import keras
-from tensorflow.keras import layers
+keras = tf.keras
+layers = tf.keras.layers
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-
-# Add the Sampling layer class here.
 # It takes [z_mean, z_log_var] as input and returns a sampled latent vector z.
 # Formula: z = z_mean + eps * exp(0.5 * z_log_var)  where eps ~ N(0, I)
 # This needs to be a keras Layer subclass with a call() method.
@@ -43,9 +41,6 @@ class VAE(keras.Model):
     """
     Variational Autoencoder for compressing high-dimensional feature matrices
     into a low-dimensional latent space (latent_dim=32).
-
-    Input  : X of shape (n_samples, input_dim)  e.g. (300, 399)
-    Output : Z of shape (n_samples, latent_dim) e.g. (300, 32)
     """
 
     def __init__(self, input_dim: int, latent_dim: int = 32, **kwargs):
@@ -64,13 +59,11 @@ class VAE(keras.Model):
         # Build encoder and decoder models
         self.encoder = self._build_encoder()
         self.decoder = self._build_decoder()
+        self.sampling = Sampling()
 
-        # Add three keras.metrics.Mean trackers here:
-        #   self.total_loss_tracker
-        #   self.reconstruction_loss_tracker
-        #   self.kl_loss_tracker
-        # These track the running average of each loss during training.
-        # ─────────────────────────────────────────────────────────────────────
+        self.total_loss_tracker = keras.metrics.Mean(name="loss")
+        self.reconstruction_loss_tracker = keras.metrics.Mean(name="reconstruction_loss")
+        self.kl_loss_tracker = keras.metrics.Mean(name="kl_loss")
 
     # ═══════════════════════════════════════════════════════════════════════════
     # ENCODER
@@ -123,7 +116,7 @@ class VAE(keras.Model):
     #   4. Return reconstruction
     def call(self, inputs):
         z_mean, z_log_var = self.encoder(inputs)
-        z = Sampling()([z_mean, z_log_var])
+        z = self.sampling([z_mean, z_log_var])
         reconstruction = self.decoder(z)
         return reconstruction
     # ═══════════════════════════════════════════════════════════════════════════
@@ -144,12 +137,12 @@ class VAE(keras.Model):
 
         with tf.GradientTape() as tape:
             z_mean, z_log_var = self.encoder(data)
-            z = Sampling()([z_mean, z_log_var])
+            z = self.sampling([z_mean, z_log_var])
             reconstruction = self.decoder(z)
 
             reconstruction_loss = tf.reduce_mean(
                 tf.reduce_sum(
-                    keras.losses.mse(data, reconstruction), axis=1
+                    tf.square(data - reconstruction), axis=1
                 )
             )
 
@@ -267,3 +260,6 @@ class VAE(keras.Model):
         self(dummy)
         super().load_weights(filepath)
         print(f"[✓] VAE weights loaded ← {filepath}")
+
+
+
