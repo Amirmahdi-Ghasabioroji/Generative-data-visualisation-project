@@ -51,10 +51,16 @@ class VAE(keras.Model):
         ----------
         input_dim  : size of the input feature vector (e.g. 399)
         latent_dim : size of the compressed latent space (default 32)
+        beta       : weight on KL loss — set to input_dim/latent_dim so
+                     reconstruction and KL contribute equally (prevents
+                     posterior collapse)
         """
         super().__init__(**kwargs)
         self.input_dim  = input_dim
         self.latent_dim = latent_dim
+        # Beta balances reconstruction vs KL — default keeps both terms roughly
+        # equal in magnitude: recon sums over input_dim, KL over latent_dim.
+        self.beta = input_dim / latent_dim
 
         # Build encoder and decoder models
         self.encoder = self._build_encoder()
@@ -116,6 +122,8 @@ class VAE(keras.Model):
     #   4. Return reconstruction
     def call(self, inputs):
         z_mean, z_log_var = self.encoder(inputs)
+        # Clip log-variance to prevent exp() overflow in Sampling and KL loss
+        z_log_var = tf.clip_by_value(z_log_var, -10.0, 10.0)
         z = self.sampling([z_mean, z_log_var])
         reconstruction = self.decoder(z)
         return reconstruction
@@ -137,6 +145,8 @@ class VAE(keras.Model):
 
         with tf.GradientTape() as tape:
             z_mean, z_log_var = self.encoder(data)
+            # Clip log-variance to prevent exp() overflow
+            z_log_var = tf.clip_by_value(z_log_var, -10.0, 10.0)
             z = self.sampling([z_mean, z_log_var])
             reconstruction = self.decoder(z)
 
@@ -152,7 +162,9 @@ class VAE(keras.Model):
                 )
             )
 
-            total_loss = reconstruction_loss + kl_loss
+            # Beta weighting keeps reconstruction and KL losses in the same
+            # magnitude range — prevents the KL term from being ignored
+            total_loss = reconstruction_loss + self.beta * kl_loss
 
         grads = tape.gradient(total_loss, self.trainable_weights)
         self.optimizer.apply_gradients(zip(grads, self.trainable_weights))
