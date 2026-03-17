@@ -32,16 +32,18 @@ except Exception:
 QUERY = "bitcoin OR btc"
 EXTRA_QUERY_TERMS = ["#bitcoin", "#btc", "crypto"]
 SEARCH_LANGUAGE = "en"
-TARGET_POSTS = 100000
-START_DATE = datetime(2024, 1, 1, tzinfo=timezone.utc)
-END_DATE = datetime(2024, 9, 30, 23, 59, 59, 999999, tzinfo=timezone.utc)
-OUTPUT_FILE = "bitcoin_bluesky_jan2024_sep2024.json"
+TARGET_POSTS = 150000
+START_DATE = datetime(2025, 1, 1, tzinfo=timezone.utc)
+END_DATE = datetime(2025, 12, 31, 23, 59, 59, 999999, tzinfo=timezone.utc)
+OUTPUT_FILE = "bitcoin_bluesky_jan2025_dec2025.json"
 RUN_REPORT_FILE = "bitcoin_bluesky_run_report.json"
 MIN_RELEVANCE_SCORE = 0.30
+SENTIMENT_NEUTRAL_BAND = 0.15
+ML_SENTIMENT_BLEND = 0.65  # 65% lexical (post-level) + 35% cluster profile
 
 # AI Model Settings
-USE_AI_MODEL = False  # Set to True to use trained Keras model + KMeans
-MODEL_DIR = "AI_systems/model_artifacts"  # Path to model artifacts
+USE_AI_MODEL = True  # Set to True to use trained Keras model + KMeans
+MODEL_DIR = "AI_systems/scraper_model_artifacts"  # Path to model artifacts
 # =========================================================
 
 # Internal config (do not edit)
@@ -68,10 +70,15 @@ SPAM_TERMS = {
 BULLISH_TERMS = {
     "bullish", "buy", "long", "rally", "breakout", "green", "uptrend",
     "strength", "accumulate", "recovery", "optimism", "greed",
+    "hodl", "strong", "surge", "soar", "moon", "pump", "explosion",
+    "bull run", "upside", "relief", "gain", "gains", "profit", "momentum",
+    "advance", "buyers", "buying",
 }
 BEARISH_TERMS = {
     "bearish", "sell", "short", "crash", "dump", "red", "downtrend",
     "weakness", "panic", "fear", "drawdown", "recession",
+    "decline", "drop", "plunge", "collapse", "bear", "sellers", "selling",
+    "liquidation", "rekt", "bleed", "correction",
 }
 
 TOPIC_KEYWORDS = {
@@ -253,6 +260,8 @@ def _init_stats() -> dict[str, int]:
     return {
         "seen": 0,
         "kept": 0,
+        "classified_ml": 0,
+        "classified_rules": 0,
         "dropped_duplicate": 0,
         "dropped_missing_text": 0,
         "dropped_non_english": 0,
@@ -266,6 +275,7 @@ def _print_stats(stats: dict[str, int]):
     print(
         "[i] Stats: "
         f"seen={stats['seen']} kept={stats['kept']} "
+        f"ml_classified={stats['classified_ml']} rules_classified={stats['classified_rules']} "
         f"drop_duplicate={stats['dropped_duplicate']} "
         f"drop_missing_text={stats['dropped_missing_text']} "
         f"drop_non_english={stats['dropped_non_english']} "
@@ -341,13 +351,15 @@ def _fear_greed_score(text: str) -> tuple[float, str]:
 
     # Range: [-1, 1] where -1=fear/bearish and +1=greed/bullish
     score = (bullish - bearish) / total
-    if score >= 0.25:
-        label = "greed"
-    elif score <= -0.25:
-        label = "fear"
-    else:
-        label = "neutral"
-    return round(float(score), 4), label
+    return round(float(score), 4), _sentiment_from_score(score)
+
+
+def _sentiment_from_score(score: float) -> str:
+    if score >= SENTIMENT_NEUTRAL_BAND:
+        return "greed"
+    if score <= -SENTIMENT_NEUTRAL_BAND:
+        return "fear"
+    return "neutral"
 
 
 def _extract_topic_tags(text: str) -> list[str]:
@@ -382,6 +394,10 @@ def _build_run_report(
         "output_file": OUTPUT_FILE,
         "posts_saved": collected_count,
         "filtering_stats": stats,
+        "classification_counts": {
+            "ml": stats.get("classified_ml", 0),
+            "rules": stats.get("classified_rules", 0),
+        },
         "relevance_threshold": MIN_RELEVANCE_SCORE,
         "ai_mode": ai_mode,
         "model_dir": model_dir,
@@ -418,6 +434,7 @@ class AIInferenceEngine:
         self.model_dir = Path(model_dir)
         self.model_source = "rules"
         self.mode = "rules"
+        self.prediction_errors = 0
 
         # Unsupervised Keras + KMeans artifacts
         self.keras_model = None
@@ -473,10 +490,17 @@ class AIInferenceEngine:
     def predict(self, text: str) -> dict:
         if not self.enabled:
             return {"source": "rules"}
-        return self._predict_unsupervised(text)
+        try:
+            return self._predict_unsupervised(text)
+        except Exception as e:
+            self.prediction_errors += 1
+            if self.prediction_errors <= 3:
+                print(f"[i] ML prediction failed for a post, using rule fallback: {e}")
+            return {"source": "rules"}
 
     def _predict_unsupervised(self, text: str) -> dict:
-        vector = self.embedding_extractor.predict([text], verbose=0)
+        model_input = tf.constant([text], dtype=tf.string)
+        vector = self.embedding_extractor.predict(model_input, verbose=0)
         cluster_id = int(self.kmeans_model.predict(vector)[0])
 
         profile = self.cluster_profiles.get(str(cluster_id), {})
@@ -638,6 +662,11 @@ def clean_post(
         model_mode = str(model_result.get("mode", ai_engine.mode))
 
         if model_source == "ml":
+            stats["classified_ml"] += 1
+        else:
+            stats["classified_rules"] += 1
+
+        if model_source == "ml":
             spam_score = float(model_result.get("spam_score", 0.0))
             if spam_score >= 0.5:
                 stats["dropped_spam"] += 1
@@ -649,8 +678,14 @@ def clean_post(
                 stats["dropped_low_relevance"] += 1
                 return None
 
-            fear_greed_score = float(model_result.get("fear_greed_score", 0.0))
-            sentiment_label = str(model_result.get("sentiment_label", "neutral"))
+            cluster_fg = float(model_result.get("fear_greed_score", 0.0))
+            lexical_fg, _ = _fear_greed_score(normalized_text)
+            fear_greed_score = round(
+                (ML_SENTIMENT_BLEND * float(lexical_fg))
+                + ((1.0 - ML_SENTIMENT_BLEND) * float(cluster_fg)),
+                4,
+            )
+            sentiment_label = _sentiment_from_score(fear_greed_score)
             topic_tags = model_result.get("topic_tags", []) or []
             topic_confidence = model_result.get("topic_confidence", {}) or {}
         else:
@@ -734,6 +769,12 @@ def fetch_posts(use_ai_model: bool = False, model_dir: str = DEFAULT_MODEL_DIR):
     print(f"[i] Date filter window: {START_DATE.isoformat()} to {END_DATE.isoformat()}")
     print(f"[i] Run ID: {run_id}")
     print(f"[i] Classification mode: {ai_engine.model_source}")
+    if use_ai_model and ai_engine.enabled:
+        print("[✓] AI model is active. Posts will use Keras+KMeans classification.")
+    elif use_ai_model and not ai_engine.enabled:
+        print("[!] AI model was requested but not loaded. Using rule-based fallback.")
+    else:
+        print("[i] AI model disabled in config. Using rule-based classification.")
     time_slices = _build_time_slices(START_DATE, END_DATE)
     print(f"[i] Time slices: {len(time_slices)} windows of ~{WINDOW_DAYS} days")
 

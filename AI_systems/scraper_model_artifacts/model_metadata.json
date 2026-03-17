@@ -1,6 +1,6 @@
 {
   "model_type": "unsupervised_text_cnn_kmeans",
-  "trained_at": "2026-03-17T13:41:42+00:00",
+  "trained_at": "2026-03-17T20:01:01+00:00",
   "input_json": "Data_Pipeline\\datasets\\bitcoin_bluesky_jan2024_sep2024.json",
   "num_posts": 65819,
   "max_tokens": 30000,
