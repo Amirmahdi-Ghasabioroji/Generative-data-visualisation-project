@@ -9,11 +9,25 @@ import json
 import time
 import getpass
 import os
+import re
+import uuid
+import argparse
 import urllib.parse
 import urllib.request
 import urllib.error
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 from atproto import Client
+
+try:
+    import joblib
+except Exception:
+    joblib = None
+
+try:
+    import tensorflow as tf
+except Exception:
+    tf = None
 
 # CONFIG
 QUERY = "bitcoin OR btc"
@@ -24,9 +38,44 @@ START_DATE = datetime(2024, 1, 1, tzinfo=timezone.utc)
 END_DATE = datetime(2024, 9, 30, 23, 59, 59, 999999, tzinfo=timezone.utc)
 SAVE_EVERY = 1000
 OUTPUT_FILE = "bitcoin_bluesky_jan2024_sep2024.json"
+RUN_REPORT_FILE = "bitcoin_bluesky_run_report.json"
 BATCH_LIMIT = 100  # Max posts per API call
 WINDOW_DAYS = 30
 MAX_CONSECUTIVE_ERRORS_PER_TERM = 3
+MIN_RELEVANCE_SCORE = 0.30
+DEFAULT_MODEL_DIR = "AI_systems/model_artifacts"
+
+# Lightweight AI-style enrichment configuration (rule + lexicon based)
+BITCOIN_TERMS = {
+    "bitcoin", "btc", "satoshi", "hodl", "halving", "mining", "onchain",
+    "lightning", "utxo", "whale", "cold wallet", "hot wallet", "etf", "spot etf",
+}
+MARKET_TERMS = {
+    "price", "volatility", "bull", "bear", "breakout", "support", "resistance",
+    "rally", "dump", "pump", "liquidation", "volume", "market cap", "trend",
+    "ath", "drawdown", "correction", "momentum", "return",
+}
+SPAM_TERMS = {
+    "airdrop", "giveaway", "referral", "promo", "dm me", "guaranteed profit",
+    "100x", "moonshot signal", "join my group", "vip signals",
+}
+BULLISH_TERMS = {
+    "bullish", "buy", "long", "rally", "breakout", "green", "uptrend",
+    "strength", "accumulate", "recovery", "optimism", "greed",
+}
+BEARISH_TERMS = {
+    "bearish", "sell", "short", "crash", "dump", "red", "downtrend",
+    "weakness", "panic", "fear", "drawdown", "recession",
+}
+
+TOPIC_KEYWORDS = {
+    "price_action": {"price", "breakout", "support", "resistance", "trend", "ath", "return"},
+    "volatility": {"volatility", "liquidation", "whipsaw", "squeeze", "drawdown"},
+    "macro": {"fed", "rates", "inflation", "cpi", "macro", "dollar", "treasury"},
+    "regulation": {"sec", "regulation", "compliance", "ban", "legal", "lawsuit"},
+    "etf": {"etf", "spot etf", "approval", "inflow", "outflow"},
+    "adoption": {"adoption", "merchant", "payments", "lightning", "wallet", "onchain"},
+}
 
 def get_credentials():
     handle = (os.getenv("BLUESKY_HANDLE") or "").strip()
@@ -202,6 +251,8 @@ def _init_stats() -> dict[str, int]:
         "dropped_missing_text": 0,
         "dropped_non_english": 0,
         "dropped_date": 0,
+        "dropped_low_relevance": 0,
+        "dropped_spam": 0,
     }
 
 
@@ -212,12 +263,271 @@ def _print_stats(stats: dict[str, int]):
         f"drop_duplicate={stats['dropped_duplicate']} "
         f"drop_missing_text={stats['dropped_missing_text']} "
         f"drop_non_english={stats['dropped_non_english']} "
-        f"drop_date={stats['dropped_date']}"
+        f"drop_date={stats['dropped_date']} "
+        f"drop_low_relevance={stats['dropped_low_relevance']} "
+        f"drop_spam={stats['dropped_spam']}"
     )
 
 def save_json(data):
     with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def save_run_report(report: dict):
+    with open(RUN_REPORT_FILE, "w", encoding="utf-8") as f:
+        json.dump(report, f, ensure_ascii=False, indent=2)
+
+
+def _normalize_text(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").strip().lower())
+
+
+def _contains_any(text: str, terms: set[str]) -> int:
+    count = 0
+    for term in terms:
+        if term in text:
+            count += 1
+    return count
+
+
+def _is_probable_spam(text: str) -> bool:
+    url_count = len(re.findall(r"https?://", text))
+    spam_hits = _contains_any(text, SPAM_TERMS)
+    return spam_hits > 0 or url_count >= 3
+
+
+def _relevance_score(text: str, query_term: str) -> tuple[float, str]:
+    normalized = _normalize_text(text)
+    if not normalized:
+        return 0.0, "irrelevant"
+
+    btc_hits = _contains_any(normalized, BITCOIN_TERMS)
+    market_hits = _contains_any(normalized, MARKET_TERMS)
+    query_hits = 1 if _normalize_text(query_term) in normalized else 0
+    has_ticker = 1 if "$btc" in normalized or " btc " in f" {normalized} " else 0
+
+    raw = (
+        0.35 * min(btc_hits, 3)
+        + 0.25 * min(market_hits, 3)
+        + 0.25 * query_hits
+        + 0.15 * has_ticker
+    )
+    score = max(0.0, min(1.0, raw))
+
+    if score >= 0.75:
+        label = "high"
+    elif score >= 0.45:
+        label = "medium"
+    elif score >= MIN_RELEVANCE_SCORE:
+        label = "low"
+    else:
+        label = "irrelevant"
+    return score, label
+
+
+def _fear_greed_score(text: str) -> tuple[float, str]:
+    normalized = _normalize_text(text)
+    bullish = _contains_any(normalized, BULLISH_TERMS)
+    bearish = _contains_any(normalized, BEARISH_TERMS)
+    total = bullish + bearish
+    if total == 0:
+        return 0.0, "neutral"
+
+    # Range: [-1, 1] where -1=fear/bearish and +1=greed/bullish
+    score = (bullish - bearish) / total
+    if score >= 0.25:
+        label = "greed"
+    elif score <= -0.25:
+        label = "fear"
+    else:
+        label = "neutral"
+    return round(float(score), 4), label
+
+
+def _extract_topic_tags(text: str) -> list[str]:
+    normalized = _normalize_text(text)
+    tags: list[str] = []
+    for topic, keywords in TOPIC_KEYWORDS.items():
+        if any(keyword in normalized for keyword in keywords):
+            tags.append(topic)
+    return tags
+
+
+def _build_run_report(
+    run_id: str,
+    stats: dict[str, int],
+    collected_count: int,
+    query_terms: list[str],
+    ai_mode: str,
+    model_dir: str,
+) -> dict:
+    now = datetime.now(tz=timezone.utc).isoformat(timespec="seconds")
+    return {
+        "run_id": run_id,
+        "generated_at": now,
+        "query": QUERY,
+        "query_terms": query_terms,
+        "language": SEARCH_LANGUAGE,
+        "target_posts": TARGET_POSTS,
+        "date_range": {
+            "start": START_DATE.isoformat(),
+            "end": END_DATE.isoformat(),
+        },
+        "output_file": OUTPUT_FILE,
+        "posts_saved": collected_count,
+        "filtering_stats": stats,
+        "relevance_threshold": MIN_RELEVANCE_SCORE,
+        "ai_mode": ai_mode,
+        "model_dir": model_dir,
+    }
+
+
+def _parse_iso_date(value: str, end_of_day: bool = False) -> datetime:
+    parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    else:
+        parsed = parsed.astimezone(timezone.utc)
+    if end_of_day:
+        return parsed.replace(hour=23, minute=59, second=59, microsecond=999999)
+    return parsed.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def _apply_runtime_overrides(args):
+    global START_DATE, END_DATE, QUERY, TARGET_POSTS, OUTPUT_FILE, RUN_REPORT_FILE, MIN_RELEVANCE_SCORE
+
+    if args.start_date:
+        START_DATE = _parse_iso_date(args.start_date, end_of_day=False)
+    if args.end_date:
+        END_DATE = _parse_iso_date(args.end_date, end_of_day=True)
+    if START_DATE > END_DATE:
+        raise ValueError("start_date must be earlier than or equal to end_date")
+
+    if args.query:
+        QUERY = args.query
+    if args.target_posts is not None:
+        TARGET_POSTS = max(1, int(args.target_posts))
+    if args.output_file:
+        OUTPUT_FILE = args.output_file
+    if args.run_report_file:
+        RUN_REPORT_FILE = args.run_report_file
+    if args.min_relevance is not None:
+        MIN_RELEVANCE_SCORE = max(0.0, min(1.0, float(args.min_relevance)))
+
+
+class AIInferenceEngine:
+    """
+        AI inference engine for the scraper.
+
+        Preferred unsupervised artifacts in model_dir:
+            - model.keras
+            - kmeans.joblib
+            - cluster_profiles.json
+            - thresholds.json
+
+        If artifacts (or dependencies) are unavailable, falls back to rule scoring.
+    """
+
+    def __init__(self, use_ai_model: bool, model_dir: str):
+        self.enabled = False
+        self.model_dir = Path(model_dir)
+        self.model_source = "rules"
+        self.mode = "rules"
+
+        # Unsupervised Keras + KMeans artifacts
+        self.keras_model = None
+        self.embedding_extractor = None
+        self.kmeans_model = None
+        self.cluster_profiles = {}
+        self.thresholds = {}
+
+        if not use_ai_model:
+            return
+
+        if self._try_enable_keras_unsupervised():
+            return
+
+        print("[i] AI model artifacts not found or invalid. Falling back to rule-based scoring.")
+
+    def _try_enable_keras_unsupervised(self) -> bool:
+        if tf is None or joblib is None:
+            return False
+
+        keras_path = self.model_dir / "model.keras"
+        kmeans_path = self.model_dir / "kmeans.joblib"
+        profiles_path = self.model_dir / "cluster_profiles.json"
+        thresholds_path = self.model_dir / "thresholds.json"
+
+        required = [keras_path, kmeans_path, profiles_path, thresholds_path]
+        if not all(path.exists() for path in required):
+            return False
+
+        try:
+            self.keras_model = tf.keras.models.load_model(keras_path)
+            self.embedding_extractor = tf.keras.Model(
+                self.keras_model.input,
+                self.keras_model.get_layer("latent").output,
+            )
+            self.kmeans_model = joblib.load(kmeans_path)
+
+            with profiles_path.open("r", encoding="utf-8") as f:
+                self.cluster_profiles = json.load(f)
+
+            with thresholds_path.open("r", encoding="utf-8") as f:
+                self.thresholds = json.load(f)
+
+            self.enabled = True
+            self.model_source = "ml-unsupervised"
+            self.mode = "keras-unsupervised"
+            print(f"[✓] Unsupervised Keras+KMeans mode enabled from {self.model_dir}")
+            return True
+        except Exception as e:
+            print(f"[i] Could not load Keras unsupervised artifacts: {e}")
+            return False
+
+    def predict(self, text: str) -> dict:
+        if not self.enabled:
+            return {"source": "rules"}
+        return self._predict_unsupervised(text)
+
+    def _predict_unsupervised(self, text: str) -> dict:
+        vector = self.embedding_extractor.predict([text], verbose=0)
+        cluster_id = int(self.kmeans_model.predict(vector)[0])
+
+        profile = self.cluster_profiles.get(str(cluster_id), {})
+        relevance_score = float(profile.get("relevance_score", 0.0))
+        spam_score = float(profile.get("spam_score", 0.0))
+        fear_greed_score = float(profile.get("fear_greed_score", 0.0))
+        sentiment_label = str(profile.get("sentiment_label", "neutral"))
+        topic_scores = profile.get("topic_scores", {}) or {}
+
+        relevance_high = float(self.thresholds.get("relevance_high", 0.75))
+        relevance_medium = float(self.thresholds.get("relevance_medium", 0.45))
+        topic_threshold = float(self.thresholds.get("topic_threshold", 0.5))
+
+        if relevance_score >= relevance_high:
+            relevance_label = "high"
+        elif relevance_score >= relevance_medium:
+            relevance_label = "medium"
+        elif relevance_score >= MIN_RELEVANCE_SCORE:
+            relevance_label = "low"
+        else:
+            relevance_label = "irrelevant"
+
+        topic_tags = [tag for tag, score in topic_scores.items() if float(score) >= topic_threshold]
+
+        return {
+            "source": "ml",
+            "mode": "keras-unsupervised",
+            "cluster_id": cluster_id,
+            "relevance_score": round(relevance_score, 4),
+            "relevance_label": relevance_label,
+            "spam_score": round(spam_score, 4),
+            "fear_greed_score": round(fear_greed_score, 4),
+            "sentiment_label": sentiment_label,
+            "topic_tags": topic_tags,
+            "topic_confidence": {k: round(float(v), 4) for k, v in topic_scores.items()},
+        }
 
 
 def _extract_access_jwt(client: Client) -> str | None:
@@ -309,6 +619,9 @@ def clean_post(
     client: Client,
     follower_cache: dict[str, int],
     stats: dict[str, int],
+    query_term: str,
+    run_id: str,
+    ai_engine: AIInferenceEngine,
 ):
     """
     Takes a post object/dict and returns cleaned post.
@@ -333,6 +646,42 @@ def clean_post(
             stats["dropped_date"] += 1
             return None
 
+        normalized_text = _normalize_text(text)
+
+        model_result = ai_engine.predict(normalized_text)
+        model_source = model_result.get("source", "rules")
+        model_mode = str(model_result.get("mode", ai_engine.mode))
+
+        if model_source == "ml":
+            spam_score = float(model_result.get("spam_score", 0.0))
+            if spam_score >= 0.5:
+                stats["dropped_spam"] += 1
+                return None
+
+            relevance_score = float(model_result.get("relevance_score", 0.0))
+            relevance_label = str(model_result.get("relevance_label", "irrelevant"))
+            if relevance_score < MIN_RELEVANCE_SCORE:
+                stats["dropped_low_relevance"] += 1
+                return None
+
+            fear_greed_score = float(model_result.get("fear_greed_score", 0.0))
+            sentiment_label = str(model_result.get("sentiment_label", "neutral"))
+            topic_tags = model_result.get("topic_tags", []) or []
+            topic_confidence = model_result.get("topic_confidence", {}) or {}
+        else:
+            if _is_probable_spam(normalized_text):
+                stats["dropped_spam"] += 1
+                return None
+
+            relevance_score, relevance_label = _relevance_score(normalized_text, query_term)
+            if relevance_score < MIN_RELEVANCE_SCORE:
+                stats["dropped_low_relevance"] += 1
+                return None
+
+            fear_greed_score, sentiment_label = _fear_greed_score(normalized_text)
+            topic_tags = _extract_topic_tags(normalized_text)
+            topic_confidence = {tag: 1.0 for tag in topic_tags}
+
         created_at = _format_timestamp(created_at_raw)
 
         author = _get_any(post, ["author"], {}) or {}
@@ -354,6 +703,18 @@ def clean_post(
             "author_follower_count": follower_count,
             "word_count": len(text.split()),
             "char_count": len(text),
+            "query_term": query_term,
+            "relevance_score": round(float(relevance_score), 4),
+            "relevance_label": relevance_label,
+            "topic_tags": topic_tags,
+            "topic_confidence": topic_confidence,
+            "fear_greed_score": fear_greed_score,
+            "sentiment_label": sentiment_label,
+            "classification_source": model_source,
+            "classification_mode": model_mode,
+            "cluster_id": model_result.get("cluster_id", None),
+            "ingestion_run_id": run_id,
+            "ingested_at": datetime.now(tz=timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
         }
         stats["kept"] += 1
         return cleaned
@@ -361,9 +722,11 @@ def clean_post(
         print(f"[!] Skipping post due to error: {e}")
         return None
 
-def fetch_posts():
+def fetch_posts(use_ai_model: bool = False, model_dir: str = DEFAULT_MODEL_DIR):
     handle, password = get_credentials()
     client = Client()
+    run_id = str(uuid.uuid4())
+    ai_engine = AIInferenceEngine(use_ai_model=use_ai_model, model_dir=model_dir)
 
     try:
         logged_in_as = _login_with_retries(client, handle, password)
@@ -384,6 +747,8 @@ def fetch_posts():
 
     print(f"[i] Query terms: {query_terms}")
     print(f"[i] Date filter window: {START_DATE.isoformat()} to {END_DATE.isoformat()}")
+    print(f"[i] Run ID: {run_id}")
+    print(f"[i] Classification mode: {ai_engine.model_source}")
     time_slices = _build_time_slices(START_DATE, END_DATE)
     print(f"[i] Time slices: {len(time_slices)} windows of ~{WINDOW_DAYS} days")
 
@@ -430,7 +795,15 @@ def fetch_posts():
                         break
 
                     for post in posts:
-                        cleaned = clean_post(post, client=client, follower_cache=follower_cache, stats=stats)
+                        cleaned = clean_post(
+                            post,
+                            client=client,
+                            follower_cache=follower_cache,
+                            stats=stats,
+                            query_term=search_term,
+                            run_id=run_id,
+                            ai_engine=ai_engine,
+                        )
                         if not cleaned:
                             continue
 
@@ -493,9 +866,32 @@ def fetch_posts():
                     continue
 
     save_json(collected)
+    run_report = _build_run_report(
+        run_id=run_id,
+        stats=stats,
+        collected_count=len(collected),
+        query_terms=query_terms,
+        ai_mode=ai_engine.model_source,
+        model_dir=str(Path(model_dir)),
+    )
+    save_run_report(run_report)
     _print_stats(stats)
     print(f"\n[✓] Finished. Total posts saved: {len(collected)}")
     print(f"[✓] Output file: {OUTPUT_FILE}")
+    print(f"[✓] Run report: {RUN_REPORT_FILE}")
 
 if __name__ == "__main__":
-    fetch_posts()
+    parser = argparse.ArgumentParser(description="Bluesky Bitcoin scraper with optional ML classification.")
+    parser.add_argument("--start-date", type=str, default=None, help="ISO date, e.g. 2024-01-01")
+    parser.add_argument("--end-date", type=str, default=None, help="ISO date, e.g. 2024-09-30")
+    parser.add_argument("--query", type=str, default=None, help="Search query, e.g. 'bitcoin OR btc'")
+    parser.add_argument("--target-posts", type=int, default=None, help="Max posts to collect")
+    parser.add_argument("--output-file", type=str, default=None, help="Output JSON path")
+    parser.add_argument("--run-report-file", type=str, default=None, help="Run report JSON path")
+    parser.add_argument("--min-relevance", type=float, default=None, help="Min relevance score [0,1]")
+    parser.add_argument("--use-ai-model", action="store_true", help="Enable unsupervised Keras model inference if artifacts exist")
+    parser.add_argument("--model-dir", type=str, default=DEFAULT_MODEL_DIR, help="Directory containing model.keras + kmeans/profile artifacts")
+    args = parser.parse_args()
+
+    _apply_runtime_overrides(args)
+    fetch_posts(use_ai_model=args.use_ai_model, model_dir=args.model_dir)
