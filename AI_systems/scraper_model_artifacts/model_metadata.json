@@ -1,0 +1,21 @@
+{
+  "model_type": "unsupervised_text_cnn_kmeans",
+  "trained_at": "2026-03-17T13:41:42+00:00",
+  "input_json": "Data_Pipeline\\datasets\\bitcoin_bluesky_jan2024_sep2024.json",
+  "num_posts": 65819,
+  "max_tokens": 30000,
+  "sequence_length": 128,
+  "embedding_dim": 128,
+  "latent_dim": 128,
+  "epochs": 5,
+  "batch_size": 128,
+  "num_clusters": 8,
+  "artifacts": {
+    "model": "model.keras",
+    "kmeans": "kmeans.joblib",
+    "cluster_profiles": "cluster_profiles.json",
+    "thresholds": "thresholds.json",
+    "label_maps": "label_maps.json",
+    "metadata": "model_metadata.json"
+  }
+}

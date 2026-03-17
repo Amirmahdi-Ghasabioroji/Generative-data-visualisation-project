@@ -1,0 +1,122 @@
+{
+  "0": {
+    "size": 15533,
+    "relevance_score": 0.0692,
+    "spam_score": 0.0123,
+    "fear_greed_score": -0.0432,
+    "sentiment_label": "neutral",
+    "topic_scores": {
+      "price_action": 0.0669,
+      "volatility": 0.001,
+      "macro": 0.0239,
+      "regulation": 0.0834,
+      "etf": 0.0013,
+      "adoption": 0.015
+    }
+  },
+  "1": {
+    "size": 10909,
+    "relevance_score": 0.45,
+    "spam_score": 0.0,
+    "fear_greed_score": 0.0,
+    "sentiment_label": "neutral",
+    "topic_scores": {
+      "price_action": 0.0,
+      "volatility": 0.0,
+      "macro": 0.0,
+      "regulation": 0.0,
+      "etf": 0.0,
+      "adoption": 0.0
+    }
+  },
+  "2": {
+    "size": 4073,
+    "relevance_score": 0.4665,
+    "spam_score": 0.0049,
+    "fear_greed_score": -0.0165,
+    "sentiment_label": "neutral",
+    "topic_scores": {
+      "price_action": 0.0398,
+      "volatility": 0.0027,
+      "macro": 0.0226,
+      "regulation": 0.053,
+      "etf": 0.0417,
+      "adoption": 0.0317
+    }
+  },
+  "3": {
+    "size": 1296,
+    "relevance_score": 0.4123,
+    "spam_score": 0.0,
+    "fear_greed_score": -0.0008,
+    "sentiment_label": "neutral",
+    "topic_scores": {
+      "price_action": 0.0,
+      "volatility": 0.0,
+      "macro": 0.0008,
+      "regulation": 0.0046,
+      "etf": 0.0008,
+      "adoption": 0.0
+    }
+  },
+  "4": {
+    "size": 6864,
+    "relevance_score": 0.7492,
+    "spam_score": 0.0143,
+    "fear_greed_score": -0.0235,
+    "sentiment_label": "neutral",
+    "topic_scores": {
+      "price_action": 0.2147,
+      "volatility": 0.0383,
+      "macro": 0.1001,
+      "regulation": 0.1874,
+      "etf": 0.2295,
+      "adoption": 0.0631
+    }
+  },
+  "5": {
+    "size": 10688,
+    "relevance_score": 0.5519,
+    "spam_score": 0.0091,
+    "fear_greed_score": -0.0293,
+    "sentiment_label": "neutral",
+    "topic_scores": {
+      "price_action": 0.0909,
+      "volatility": 0.0038,
+      "macro": 0.0605,
+      "regulation": 0.0972,
+      "etf": 0.0138,
+      "adoption": 0.0409
+    }
+  },
+  "6": {
+    "size": 8265,
+    "relevance_score": 0.0936,
+    "spam_score": 0.0271,
+    "fear_greed_score": -0.0828,
+    "sentiment_label": "neutral",
+    "topic_scores": {
+      "price_action": 0.0905,
+      "volatility": 0.0063,
+      "macro": 0.0488,
+      "regulation": 0.2276,
+      "etf": 0.0056,
+      "adoption": 0.0588
+    }
+  },
+  "7": {
+    "size": 8191,
+    "relevance_score": 0.0881,
+    "spam_score": 0.0046,
+    "fear_greed_score": -0.0073,
+    "sentiment_label": "neutral",
+    "topic_scores": {
+      "price_action": 0.0154,
+      "volatility": 0.0001,
+      "macro": 0.0068,
+      "regulation": 0.0275,
+      "etf": 0.0006,
+      "adoption": 0.01
+    }
+  }
+}

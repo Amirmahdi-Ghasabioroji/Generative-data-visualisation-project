@@ -1,0 +1,15 @@
+{
+  "sentiment_classes": [
+    "fear",
+    "neutral",
+    "greed"
+  ],
+  "topic_labels": [
+    "price_action",
+    "volatility",
+    "macro",
+    "regulation",
+    "etf",
+    "adoption"
+  ]
+}

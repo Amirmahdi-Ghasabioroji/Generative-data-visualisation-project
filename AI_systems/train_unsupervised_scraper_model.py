@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -31,6 +32,14 @@ import joblib
 import numpy as np
 import tensorflow as tf
 from sklearn.cluster import KMeans
+
+
+# Force UTF-8 console streams on Windows to avoid UnicodeEncodeError
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+except Exception:
+    pass
 
 
 DEFAULT_INPUT_JSON = Path("Data_Pipeline/datasets/bitcoin_bluesky_jan2024_sep2024.json")
@@ -66,7 +75,9 @@ TOPIC_KEYWORDS = {
 
 
 def _normalize_text(text: str) -> str:
-    return " ".join((text or "").strip().lower().split())
+    value = " ".join((text or "").strip().lower().split())
+    # Keep training vocabulary ASCII-only to avoid Windows cp1252 save issues.
+    return value.encode("ascii", errors="ignore").decode("ascii")
 
 
 def _contains_any(text: str, terms: set[str]) -> int:
@@ -142,7 +153,8 @@ def _build_cnn_autoencoder_model(max_tokens: int, sequence_length: int, embed_di
     )
 
     x = seq_vectorizer(text_input)
-    x = tf.keras.layers.Embedding(max_tokens, embed_dim, mask_zero=True, name="embedding")(x)
+    # Conv1D does not consume sequence masks, so keep mask_zero disabled.
+    x = tf.keras.layers.Embedding(max_tokens, embed_dim, mask_zero=False, name="embedding")(x)
     x = tf.keras.layers.Conv1D(128, 5, activation="relu", padding="same", name="conv_1")(x)
     x = tf.keras.layers.Conv1D(64, 3, activation="relu", padding="same", name="conv_2")(x)
     x = tf.keras.layers.GlobalMaxPooling1D(name="global_max_pool")(x)
@@ -180,14 +192,18 @@ def train_unsupervised_model(
 
     # Adapt vectorizer vocabulary on full corpus
     seq_vectorizer.adapt(tf.data.Dataset.from_tensor_slices(texts).batch(256))
-    vocab = seq_vectorizer.get_vocabulary()
 
-    # Multi-hot targets for reconstruction objective
+    # Multi-hot targets for reconstruction objective.
+    # Use adapt() rather than passing vocabulary explicitly to avoid
+    # reserved-token ordering issues in Keras TextVectorization.
+    # pad_to_max_tokens=True ensures output width == max_tokens,
+    # matching the decoder output dimension.
     bow_vectorizer = tf.keras.layers.TextVectorization(
         max_tokens=max_tokens,
         output_mode="multi_hot",
-        vocabulary=vocab,
+        pad_to_max_tokens=True,
     )
+    bow_vectorizer.adapt(tf.data.Dataset.from_tensor_slices(texts).batch(256))
     y_targets = bow_vectorizer(tf.constant(texts)).numpy()
 
     model.compile(
