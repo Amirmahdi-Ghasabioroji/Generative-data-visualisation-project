@@ -2,5 +2,6 @@
   "relevance_high": 0.75,
   "relevance_medium": 0.45,
   "spam_threshold": 0.5,
-  "topic_threshold": 0.5
+  "topic_threshold": 0.5,
+  "sentiment_neutral_band": 0.08
 }

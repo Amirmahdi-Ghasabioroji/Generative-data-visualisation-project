@@ -114,10 +114,10 @@ def _fear_greed_score(text: str) -> float:
     return float((bullish - bearish) / total)
 
 
-def _sentiment_label(score: float) -> str:
-    if score >= 0.15:
+def _sentiment_label(score: float, neutral_band: float = 0.15) -> str:
+    if score >= neutral_band:
         return "greed"
-    if score <= -0.15:
+    if score <= -neutral_band:
         return "fear"
     return "neutral"
 
@@ -229,11 +229,11 @@ def train_unsupervised_model(
     embeddings = embedding_extractor.predict(np.array(texts, dtype=object), batch_size=batch_size, verbose=0)
 
     k = min(max(2, num_clusters), len(texts))
-    kmeans = KMeans(n_clusters=k, random_state=42, n_init="auto")
+    kmeans = KMeans(n_clusters=k, random_state=42, n_init=20)
     clusters = kmeans.fit_predict(embeddings)
 
-    # Create per-cluster lexical profiles used by pipeline inference
-    cluster_profiles = {}
+    # First pass: collect per-cluster aggregate metrics
+    cluster_aggregates = {}
     for cluster_id in range(k):
         cluster_texts = [texts[i] for i, c in enumerate(clusters) if c == cluster_id]
         if not cluster_texts:
@@ -243,16 +243,35 @@ def train_unsupervised_model(
         spam = float(np.mean([_spam_score(t) for t in cluster_texts]))
         fg_scores = [_fear_greed_score(t) for t in cluster_texts]
         fg = float(np.mean(fg_scores))
-        sentiment = _sentiment_label(fg)
         topics = _topic_scores(cluster_texts)
 
-        cluster_profiles[str(cluster_id)] = {
+        cluster_aggregates[str(cluster_id)] = {
             "size": len(cluster_texts),
             "relevance_score": round(relevance, 4),
             "spam_score": round(spam, 4),
             "fear_greed_score": round(fg, 4),
-            "sentiment_label": sentiment,
             "topic_scores": topics,
+        }
+
+    # Adaptive band makes sentiment labels less likely to collapse to all-neutral
+    fg_values = [abs(v["fear_greed_score"]) for v in cluster_aggregates.values()]
+    if fg_values:
+        adaptive_band = float(np.quantile(fg_values, 0.35))
+        adaptive_band = max(0.08, min(0.20, adaptive_band))
+    else:
+        adaptive_band = 0.15
+
+    # Second pass: assign sentiment labels using adaptive band
+    cluster_profiles = {}
+    for cluster_id, aggregate in cluster_aggregates.items():
+        fg = float(aggregate["fear_greed_score"])
+        cluster_profiles[cluster_id] = {
+            "size": aggregate["size"],
+            "relevance_score": aggregate["relevance_score"],
+            "spam_score": aggregate["spam_score"],
+            "fear_greed_score": aggregate["fear_greed_score"],
+            "sentiment_label": _sentiment_label(fg, neutral_band=adaptive_band),
+            "topic_scores": aggregate["topic_scores"],
         }
 
     thresholds = {
@@ -260,6 +279,7 @@ def train_unsupervised_model(
         "relevance_medium": 0.45,
         "spam_threshold": 0.5,
         "topic_threshold": 0.5,
+        "sentiment_neutral_band": round(adaptive_band, 4),
     }
 
     label_maps = {
@@ -319,7 +339,7 @@ def main():
     parser.add_argument("--latent-dim", type=int, default=128)
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--batch-size", type=int, default=128)
-    parser.add_argument("--num-clusters", type=int, default=8)
+    parser.add_argument("--num-clusters", type=int, default=12)
     args = parser.parse_args()
 
     if not args.input_json.exists():

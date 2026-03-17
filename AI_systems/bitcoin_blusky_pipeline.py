@@ -37,9 +37,9 @@ START_DATE = datetime(2025, 1, 1, tzinfo=timezone.utc)
 END_DATE = datetime(2025, 12, 31, 23, 59, 59, 999999, tzinfo=timezone.utc)
 OUTPUT_FILE = "bitcoin_bluesky_jan2025_dec2025.json"
 RUN_REPORT_FILE = "bitcoin_bluesky_run_report.json"
-MIN_RELEVANCE_SCORE = 0.30
+MIN_RELEVANCE_SCORE = 0.25
 SENTIMENT_NEUTRAL_BAND = 0.15
-ML_SENTIMENT_BLEND = 0.65  # 65% lexical (post-level) + 35% cluster profile
+ML_SENTIMENT_BLEND = 0.7 # 70% lexical (post-level) + 30% cluster profile
 
 # AI Model Settings
 USE_AI_MODEL = True  # Set to True to use trained Keras model + KMeans
