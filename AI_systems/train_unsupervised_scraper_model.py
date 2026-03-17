@@ -60,9 +60,14 @@ SPAM_TERMS = {
 }
 BULLISH_TERMS = {
     "bullish", "buy", "long", "rally", "breakout", "green", "uptrend", "greed",
+    "hodl", "accumulate", "strong", "surge", "soar", "moon", "pump", "explosion",
+    "bull run", "optimism", "upside", "relief", "gain", "gains", "profit", "recovery",
+    "strength", "momentum", "advance", "rally", "buyers", "buying",
 }
 BEARISH_TERMS = {
     "bearish", "sell", "short", "crash", "dump", "red", "downtrend", "fear", "panic",
+    "weakness", "decline", "drop", "plunge", "collapse", "bearish", "bear", "sellers",
+    "selling", "liquidation", "rekt", "bleed", "drawdown", "correction", "recession",
 }
 TOPIC_KEYWORDS = {
     "price_action": {"price", "breakout", "support", "resistance", "trend", "ath", "return"},
@@ -110,9 +115,9 @@ def _fear_greed_score(text: str) -> float:
 
 
 def _sentiment_label(score: float) -> str:
-    if score >= 0.25:
+    if score >= 0.15:
         return "greed"
-    if score <= -0.25:
+    if score <= -0.15:
         return "fear"
     return "neutral"
 

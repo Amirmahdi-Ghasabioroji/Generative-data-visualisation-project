@@ -11,7 +11,6 @@ import getpass
 import os
 import re
 import uuid
-import argparse
 import urllib.parse
 import urllib.request
 import urllib.error
@@ -29,21 +28,28 @@ try:
 except Exception:
     tf = None
 
-# CONFIG
+# ================== EDIT THESE SETTINGS ==================
 QUERY = "bitcoin OR btc"
 EXTRA_QUERY_TERMS = ["#bitcoin", "#btc", "crypto"]
 SEARCH_LANGUAGE = "en"
 TARGET_POSTS = 100000
 START_DATE = datetime(2024, 1, 1, tzinfo=timezone.utc)
 END_DATE = datetime(2024, 9, 30, 23, 59, 59, 999999, tzinfo=timezone.utc)
-SAVE_EVERY = 1000
 OUTPUT_FILE = "bitcoin_bluesky_jan2024_sep2024.json"
 RUN_REPORT_FILE = "bitcoin_bluesky_run_report.json"
+MIN_RELEVANCE_SCORE = 0.30
+
+# AI Model Settings
+USE_AI_MODEL = False  # Set to True to use trained Keras model + KMeans
+MODEL_DIR = "AI_systems/model_artifacts"  # Path to model artifacts
+# =========================================================
+
+# Internal config (do not edit)
+SAVE_EVERY = 1000
 BATCH_LIMIT = 100  # Max posts per API call
 WINDOW_DAYS = 30
 MAX_CONSECUTIVE_ERRORS_PER_TERM = 3
-MIN_RELEVANCE_SCORE = 0.30
-DEFAULT_MODEL_DIR = "AI_systems/model_artifacts"
+DEFAULT_MODEL_DIR = MODEL_DIR
 
 # Lightweight AI-style enrichment configuration (rule + lexicon based)
 BITCOIN_TERMS = {
@@ -392,27 +398,6 @@ def _parse_iso_date(value: str, end_of_day: bool = False) -> datetime:
         return parsed.replace(hour=23, minute=59, second=59, microsecond=999999)
     return parsed.replace(hour=0, minute=0, second=0, microsecond=0)
 
-
-def _apply_runtime_overrides(args):
-    global START_DATE, END_DATE, QUERY, TARGET_POSTS, OUTPUT_FILE, RUN_REPORT_FILE, MIN_RELEVANCE_SCORE
-
-    if args.start_date:
-        START_DATE = _parse_iso_date(args.start_date, end_of_day=False)
-    if args.end_date:
-        END_DATE = _parse_iso_date(args.end_date, end_of_day=True)
-    if START_DATE > END_DATE:
-        raise ValueError("start_date must be earlier than or equal to end_date")
-
-    if args.query:
-        QUERY = args.query
-    if args.target_posts is not None:
-        TARGET_POSTS = max(1, int(args.target_posts))
-    if args.output_file:
-        OUTPUT_FILE = args.output_file
-    if args.run_report_file:
-        RUN_REPORT_FILE = args.run_report_file
-    if args.min_relevance is not None:
-        MIN_RELEVANCE_SCORE = max(0.0, min(1.0, float(args.min_relevance)))
 
 
 class AIInferenceEngine:
@@ -881,17 +866,19 @@ def fetch_posts(use_ai_model: bool = False, model_dir: str = DEFAULT_MODEL_DIR):
     print(f"[✓] Run report: {RUN_REPORT_FILE}")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Bluesky Bitcoin scraper with optional ML classification.")
-    parser.add_argument("--start-date", type=str, default=None, help="ISO date, e.g. 2024-01-01")
-    parser.add_argument("--end-date", type=str, default=None, help="ISO date, e.g. 2024-09-30")
-    parser.add_argument("--query", type=str, default=None, help="Search query, e.g. 'bitcoin OR btc'")
-    parser.add_argument("--target-posts", type=int, default=None, help="Max posts to collect")
-    parser.add_argument("--output-file", type=str, default=None, help="Output JSON path")
-    parser.add_argument("--run-report-file", type=str, default=None, help="Run report JSON path")
-    parser.add_argument("--min-relevance", type=float, default=None, help="Min relevance score [0,1]")
-    parser.add_argument("--use-ai-model", action="store_true", help="Enable unsupervised Keras model inference if artifacts exist")
-    parser.add_argument("--model-dir", type=str, default=DEFAULT_MODEL_DIR, help="Directory containing model.keras + kmeans/profile artifacts")
-    args = parser.parse_args()
-
-    _apply_runtime_overrides(args)
-    fetch_posts(use_ai_model=args.use_ai_model, model_dir=args.model_dir)
+    print("=" * 70)
+    print("BLUESKY BITCOIN SCRAPER - CONFIGURATION")
+    print("=" * 70)
+    print(f"[✓] Query: {QUERY}")
+    print(f"[✓] Date range: {START_DATE.date()} to {END_DATE.date()}")
+    print(f"[✓] Target posts: {TARGET_POSTS:,}")
+    print(f"[✓] Min relevance: {MIN_RELEVANCE_SCORE}")
+    print(f"[✓] AI model enabled: {USE_AI_MODEL}")
+    if USE_AI_MODEL:
+        print(f"[✓] Model directory: {MODEL_DIR}")
+    print(f"[✓] Output file: {OUTPUT_FILE}")
+    print(f"[✓] Run report: {RUN_REPORT_FILE}")
+    print("=" * 70)
+    print()
+    
+    fetch_posts(use_ai_model=USE_AI_MODEL, model_dir=MODEL_DIR)
