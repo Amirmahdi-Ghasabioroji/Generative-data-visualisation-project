@@ -1,0 +1,65 @@
+{
+  "timestamp": "2026-03-17T14:51:12+00:00",
+  "market_cols": [
+    "log_return_close",
+    "high_low_range_pct",
+    "rv_6",
+    "rv_12",
+    "log_volume",
+    "volume_z_48",
+    "number_of_trades",
+    "volume_per_trade",
+    "taker_ratio",
+    "delta_taker_ratio",
+    "ema_gap_6_24",
+    "rsi_14"
+  ],
+  "social_cols": [
+    "post_count",
+    "unique_authors",
+    "engagement_sum",
+    "like_mean",
+    "repost_mean",
+    "reply_mean",
+    "bullish_hits_sum",
+    "bearish_hits_sum",
+    "sentiment_net",
+    "bull_bear_ratio",
+    "word_count_mean",
+    "author_followers_mean",
+    "social_empty_flag"
+  ],
+  "cross_cols": [
+    "sentiment_net_x_return",
+    "post_count_x_volatility",
+    "engagement_x_volume"
+  ],
+  "shapes": {
+    "market_features": [
+      13152,
+      12
+    ],
+    "social_features": [
+      13152,
+      13
+    ],
+    "cross_features": [
+      13152,
+      3
+    ]
+  },
+  "splits": {
+    "n_total": 13152,
+    "n_train": 9206,
+    "n_val": 1972,
+    "n_test": 1974,
+    "i_val": 9206,
+    "i_test": 11178
+  },
+  "artifacts": {
+    "market_features": "vae_model/data/market_features.npy",
+    "social_features": "vae_model/data/social_features.npy",
+    "cross_features": "vae_model/data/cross_features.npy",
+    "timestamps": "vae_model/data/timestamps.npy"
+  }
+}

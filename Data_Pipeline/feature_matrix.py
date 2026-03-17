@@ -13,9 +13,9 @@ from pathlib import Path
 
 
 
-BTC_CSV   = Path("binance_realtime/btcusdt_klines.csv")
-ETH_CSV   = Path("binance_realtime/ethusdt_klines.csv")
-OUTPUT_DIR = Path("Data_Pipeline/datasets/feature_matrix")
+BTC_CSV    = Path("Data_Pipeline/datasets/btcusdt_30m_20240101_20240930.csv")
+POSTS_JSON = Path("Data_Pipeline/datasets/bitcoin_bluesky_jan2024_sep2024.json")
+OUTPUT_DIR = Path("vae_model/data")
 
 WINDOW_SECONDS = 30 * 60  # 30 minutes in seconds
 
@@ -47,71 +47,46 @@ def load_and_resample_market(csv_path: Path) -> dict[int, dict]:
         print(f"[!] CSV not found: {csv_path}")
         return {}
 
-    # Group raw rows by 30m window
-    raw_bins: dict[int, list[dict]] = {}
+    bins: dict[int, dict] = {}
 
     with csv_path.open("r", newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
             try:
-                unix_ts  = _parse_ts(row["timestamp"])
-                window   = _floor_to_window(unix_ts)
+                # File is already 30m bars — use open_time_utc as the window key
+                window_start = _floor_to_window(_parse_ts(row["open_time_utc"]))
 
-                raw_bins.setdefault(window, []).append({
+                total_quote = float(row["quote_asset_volume"])
+                total_taker = float(row["taker_buy_base_asset_volume"])
+                taker_ratio = float(row["taker_ratio"])
+
+                bins[window_start] = {
+                    "window_start": window_start,
                     "open":         float(row["open"]),
                     "high":         float(row["high"]),
                     "low":          float(row["low"]),
                     "close":        float(row["close"]),
                     "volume":       float(row["volume"]),
-                    "quote_volume": float(row["quote_volume"]),
-                    "num_trades":   int(float(row["num_trades"])),
-                    "taker_volume": float(row["taker_volume"]),
-                })
+                    "quote_volume": total_quote,
+                    "num_trades":   int(float(row["number_of_trades"])),
+                    "taker_volume": total_taker,
+                    "taker_ratio":  taker_ratio,
+                    "n_raw_rows":   1,
+                }
             except (ValueError, KeyError):
                 continue  # Skip malformed rows
 
-    if not raw_bins:
+    if not bins:
         print(f"[!] No valid rows loaded from {csv_path.name}")
         return {}
 
-    # Aggregate each window
-    bins: dict[int, dict] = {}
-    for window_start, rows in sorted(raw_bins.items()):
-        opens         = [r["open"]         for r in rows]
-        highs         = [r["high"]         for r in rows]
-        lows          = [r["low"]          for r in rows]
-        closes        = [r["close"]        for r in rows]
-        volumes       = [r["volume"]       for r in rows]
-        quote_volumes = [r["quote_volume"] for r in rows]
-        num_trades    = [r["num_trades"]   for r in rows]
-        taker_volumes = [r["taker_volume"] for r in rows]
-
-        total_quote  = sum(quote_volumes)
-        total_taker  = sum(taker_volumes)
-        taker_ratio  = total_taker / total_quote if total_quote > 0 else 0.0
-
-        bins[window_start] = {
-            "window_start":    window_start,
-            "open":            opens[0],           # First open in window
-            "high":            max(highs),          # high
-            "low":             min(lows),           # low
-            "close":           closes[-1],          # Last close
-            "volume":          sum(volumes),        # Total volume
-            "quote_volume":    total_quote,
-            "num_trades":      sum(num_trades),
-            "taker_volume":    total_taker,
-            "taker_ratio":     taker_ratio,
-            "n_raw_rows":      len(rows),           
-        }
-
-    symbol = csv_path.stem.split("_")[0].upper()
-    print(f"[✓] {symbol}: {len(bins)} x 30m bins from {len(raw_bins)} raw windows")
+    print(f"[✓] BTCUSDT: {len(bins)} x 30m bins loaded from {csv_path.name}")
     return bins
 
 
 
 # 2
-# Reads posts.csv from the static Bluesky pipeline,
+# Reads posts JSON from the static Bluesky pipeline,
 # converts created_at to UTC unix seconds, floors each post to its
 # 30m window, then computes the minimum viable social features
 # per bin (activity, engagement, sentiment).
@@ -129,8 +104,6 @@ BEARISH_WORDS = {
     "fall", "rekt", "correction", "plunge", "decline", "bleed"
 }
 
-POSTS_CSV = Path("Data_Pipeline/datasets/bluesky_static/posts.csv")
-
 
 def _lexicon_sentiment(text: str) -> tuple[int, int]:
     """
@@ -143,48 +116,55 @@ def _lexicon_sentiment(text: str) -> tuple[int, int]:
     return bullish, bearish
 
 
-def load_and_bin_social(posts_csv: Path) -> dict[int, dict]:
+def load_and_bin_social(posts_json: Path) -> dict[int, dict]:
 
-    if not posts_csv.exists():
-        print(f"[!] posts.csv not found: {posts_csv}")
+    if not posts_json.exists():
+        print(f"[!] JSON not found: {posts_json}")
+        return {}
+
+    with posts_json.open("r", encoding="utf-8") as f:
+        raw_posts = json.load(f)
+
+    if not isinstance(raw_posts, list):
+        print(f"[!] Expected a JSON array in {posts_json.name}")
         return {}
 
     # Group raw posts by 30m window
     raw_bins: dict[int, list[dict]] = {}
 
-    with posts_csv.open("r", newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            try:
-                unix_ts = _parse_ts(row["created_at"])
-                window  = _floor_to_window(unix_ts)
-            except Exception:
-                continue  # Skip posts with unparseable timestamps
+    for post in raw_posts:
+        try:
+            unix_ts = _parse_ts(post["created_at"])
+            window  = _floor_to_window(unix_ts)
+        except Exception:
+            continue  # Skip posts with unparseable timestamps
 
-            try:
-                like_count   = float(row.get("like_count",   0) or 0)
-                repost_count = float(row.get("repost_count", 0) or 0)
-                reply_count  = float(row.get("reply_count",  0) or 0)
-                word_count   = int(float(row.get("word_count", 0) or 0))
-                text         = row.get("text", "") or ""
-                uri          = row.get("uri",  "") or ""
-            except (ValueError, TypeError):
-                continue
+        try:
+            like_count     = float(post.get("like_count",            0) or 0)
+            repost_count   = float(post.get("repost_count",          0) or 0)
+            reply_count    = float(post.get("reply_count",           0) or 0)
+            word_count     = int(float(post.get("word_count",        0) or 0))
+            follower_count = float(post.get("author_follower_count", 0) or 0)
+            text           = post.get("text",       "") or ""
+            author_did     = post.get("author_did", "") or ""
+        except (ValueError, TypeError):
+            continue
 
-            bullish_hits, bearish_hits = _lexicon_sentiment(text)
+        bullish_hits, bearish_hits = _lexicon_sentiment(text)
 
-            raw_bins.setdefault(window, []).append({
-                "like_count":    like_count,
-                "repost_count":  repost_count,
-                "reply_count":   reply_count,
-                "word_count":    word_count,
-                "bullish_hits":  bullish_hits,
-                "bearish_hits":  bearish_hits,
-                "uri":           uri,
-            })
+        raw_bins.setdefault(window, []).append({
+            "like_count":     like_count,
+            "repost_count":   repost_count,
+            "reply_count":    reply_count,
+            "word_count":     word_count,
+            "follower_count": follower_count,
+            "bullish_hits":   bullish_hits,
+            "bearish_hits":   bearish_hits,
+            "author_did":     author_did,
+        })
 
     if not raw_bins:
-        print(f"[!] No valid posts loaded from {posts_csv.name}")
+        print(f"[!] No valid posts loaded from {posts_json.name}")
         return {}
 
     # Aggregate each window into social features
@@ -192,13 +172,14 @@ def load_and_bin_social(posts_csv: Path) -> dict[int, dict]:
     for window_start, posts in sorted(raw_bins.items()):
         n = len(posts)
 
-        like_counts   = [p["like_count"]   for p in posts]
-        repost_counts = [p["repost_count"] for p in posts]
-        reply_counts  = [p["reply_count"]  for p in posts]
-        word_counts   = [p["word_count"]   for p in posts]
-        bullish_hits  = [p["bullish_hits"] for p in posts]
-        bearish_hits  = [p["bearish_hits"] for p in posts]
-        unique_authors = len(set(p["uri"].split("/")[2] for p in posts if "/" in p["uri"]))
+        like_counts     = [p["like_count"]     for p in posts]
+        repost_counts   = [p["repost_count"]   for p in posts]
+        reply_counts    = [p["reply_count"]    for p in posts]
+        word_counts     = [p["word_count"]     for p in posts]
+        follower_counts = [p["follower_count"] for p in posts]
+        bullish_hits    = [p["bullish_hits"]   for p in posts]
+        bearish_hits    = [p["bearish_hits"]   for p in posts]
+        unique_authors  = len(set(p["author_did"] for p in posts if p["author_did"]))
 
         total_bullish = sum(bullish_hits)
         total_bearish = sum(bearish_hits)
@@ -214,24 +195,26 @@ def load_and_bin_social(posts_csv: Path) -> dict[int, dict]:
         )
 
         bins[window_start] = {
-            "window_start":     window_start,
+            "window_start":          window_start,
             # Activity
-            "post_count":       n,
-            "unique_authors":   unique_authors,
+            "post_count":            n,
+            "unique_authors":        unique_authors,
             # Engagement
-            "engagement_sum":   engagement_sum,
-            "like_mean":        sum(like_counts)   / n,
-            "repost_mean":      sum(repost_counts) / n,
-            "reply_mean":       sum(reply_counts)  / n,
+            "engagement_sum":        engagement_sum,
+            "like_mean":             sum(like_counts)     / n,
+            "repost_mean":           sum(repost_counts)   / n,
+            "reply_mean":            sum(reply_counts)    / n,
             # Sentiment
-            "bullish_hits_sum": total_bullish,
-            "bearish_hits_sum": total_bearish,
-            "sentiment_net":    sentiment_net,
-            "bull_bear_ratio":  bull_bear_ratio,
+            "bullish_hits_sum":      total_bullish,
+            "bearish_hits_sum":      total_bearish,
+            "sentiment_net":         sentiment_net,
+            "bull_bear_ratio":       bull_bear_ratio,
             # Text
-            "word_count_mean":  sum(word_counts) / n,
+            "word_count_mean":       sum(word_counts)     / n,
+            # Author reach
+            "author_followers_mean": sum(follower_counts) / n,
             # Flag (always 0 here — set to 1 during join for empty windows)
-            "social_empty_flag": 0,
+            "social_empty_flag":     0,
         }
 
     print(f"[✓] Social: {len(bins)} x 30m bins from {sum(len(v) for v in raw_bins.values())} posts")
@@ -247,18 +230,19 @@ def load_and_bin_social(posts_csv: Path) -> dict[int, dict]:
 
 # Zero-filled social row used when no posts exist for a window
 _EMPTY_SOCIAL = {
-    "post_count":        0,
-    "unique_authors":    0,
-    "engagement_sum":    0.0,
-    "like_mean":         0.0,
-    "repost_mean":       0.0,
-    "reply_mean":        0.0,
-    "bullish_hits_sum":  0,
-    "bearish_hits_sum":  0,
-    "sentiment_net":     0,
-    "bull_bear_ratio":   0.0,
-    "word_count_mean":   0.0,
-    "social_empty_flag": 1,   
+    "post_count":            0,
+    "unique_authors":        0,
+    "engagement_sum":        0.0,
+    "like_mean":             0.0,
+    "repost_mean":           0.0,
+    "reply_mean":            0.0,
+    "bullish_hits_sum":      0,
+    "bearish_hits_sum":      0,
+    "sentiment_net":         0,
+    "bull_bear_ratio":       0.0,
+    "word_count_mean":       0.0,
+    "author_followers_mean": 0.0,
+    "social_empty_flag":     1,
 }
 
 
@@ -276,35 +260,36 @@ def join_market_social(
         social_row = social_bins.get(window_start, _EMPTY_SOCIAL)
 
         merged = {
-            "window_start": window_start,
+            "window_start":          window_start,
             # ── Market fields ──
-            "open":          market_row["open"],
-            "high":          market_row["high"],
-            "low":           market_row["low"],
-            "close":         market_row["close"],
-            "volume":        market_row["volume"],
-            "quote_volume":  market_row["quote_volume"],
-            "num_trades":    market_row["num_trades"],
-            "taker_volume":  market_row["taker_volume"],
-            "taker_ratio":   market_row["taker_ratio"],
+            "open":                  market_row["open"],
+            "high":                  market_row["high"],
+            "low":                   market_row["low"],
+            "close":                 market_row["close"],
+            "volume":                market_row["volume"],
+            "quote_volume":          market_row["quote_volume"],
+            "num_trades":            market_row["num_trades"],
+            "taker_volume":          market_row["taker_volume"],
+            "taker_ratio":           market_row["taker_ratio"],
             # ── Social fields ──
-            "post_count":        social_row["post_count"],
-            "unique_authors":    social_row["unique_authors"],
-            "engagement_sum":    social_row["engagement_sum"],
-            "like_mean":         social_row["like_mean"],
-            "repost_mean":       social_row["repost_mean"],
-            "reply_mean":        social_row["reply_mean"],
-            "bullish_hits_sum":  social_row["bullish_hits_sum"],
-            "bearish_hits_sum":  social_row["bearish_hits_sum"],
-            "sentiment_net":     social_row["sentiment_net"],
-            "bull_bear_ratio":   social_row["bull_bear_ratio"],
-            "word_count_mean":   social_row["word_count_mean"],
-            "social_empty_flag": social_row["social_empty_flag"],
+            "post_count":            social_row["post_count"],
+            "unique_authors":        social_row["unique_authors"],
+            "engagement_sum":        social_row["engagement_sum"],
+            "like_mean":             social_row["like_mean"],
+            "repost_mean":           social_row["repost_mean"],
+            "reply_mean":            social_row["reply_mean"],
+            "bullish_hits_sum":      social_row["bullish_hits_sum"],
+            "bearish_hits_sum":      social_row["bearish_hits_sum"],
+            "sentiment_net":         social_row["sentiment_net"],
+            "bull_bear_ratio":       social_row["bull_bear_ratio"],
+            "word_count_mean":       social_row["word_count_mean"],
+            "author_followers_mean": social_row["author_followers_mean"],
+            "social_empty_flag":     social_row["social_empty_flag"],
         }
         aligned.append(merged)
 
-    matched  = sum(1 for r in aligned if r["social_empty_flag"] == 0)
-    empty    = sum(1 for r in aligned if r["social_empty_flag"] == 1)
+    matched = sum(1 for r in aligned if r["social_empty_flag"] == 0)
+    empty   = sum(1 for r in aligned if r["social_empty_flag"] == 1)
     print(f"[✓] Aligned: {len(aligned)} rows | {matched} with social data | {empty} empty (zero-filled)")
     return aligned
 
@@ -358,9 +343,9 @@ def add_derived_market_features(aligned: list[dict]) -> list[dict]:
     if n == 0:
         return aligned
 
-    closes       = [r["close"]       for r in aligned]
-    volumes      = [r["volume"]      for r in aligned]
-    num_trades   = [r["num_trades"]  for r in aligned]
+    closes       = [r["close"]      for r in aligned]
+    volumes      = [r["volume"]     for r in aligned]
+    num_trades   = [r["num_trades"] for r in aligned]
     taker_ratios = [r["taker_ratio"] for r in aligned]
 
     log_returns = [0.0] * n
@@ -462,7 +447,7 @@ def add_cross_modal_features(aligned: list[dict]) -> list[dict]:
 # train / val / test, fits a min-max scaler on train only,
 # applies it to all splits, then exports:
 #   - market_features.npy   (n, 12)
-#   - social_features.npy   (n, 12)
+#   - social_features.npy   (n, 13)  includes author_followers_mean
 #   - cross_features.npy    (n, 3)
 #   - timestamps.npy        (n,)   unix seconds
 #   - summary.json          run metadata
@@ -476,7 +461,8 @@ MARKET_COLS = [
 SOCIAL_COLS = [
     "post_count", "unique_authors", "engagement_sum", "like_mean",
     "repost_mean", "reply_mean", "bullish_hits_sum", "bearish_hits_sum",
-    "sentiment_net", "bull_bear_ratio", "word_count_mean", "social_empty_flag",
+    "sentiment_net", "bull_bear_ratio", "word_count_mean",
+    "author_followers_mean", "social_empty_flag",
 ]
 CROSS_COLS = [
     "sentiment_net_x_return", "post_count_x_volatility", "engagement_x_volume",
@@ -551,9 +537,9 @@ def split_scale_export(
     s_train, s_val, s_test = _minmax_scale(s_train, s_val, s_test)
     c_train, c_val, c_test = _minmax_scale(c_train, c_val, c_test)
 
-    market_scaled  = np.vstack([m_train, m_val, m_test])
-    social_scaled  = np.vstack([s_train, s_val, s_test])
-    cross_scaled   = np.vstack([c_train, c_val, c_test])
+    market_scaled = np.vstack([m_train, m_val, m_test])
+    social_scaled = np.vstack([s_train, s_val, s_test])
+    cross_scaled  = np.vstack([c_train, c_val, c_test])
 
     paths = {
         "market_features": output_dir / "market_features.npy",
@@ -576,16 +562,16 @@ def split_scale_export(
     }
 
     summary = {
-        "timestamp":      datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
-        "market_cols":    MARKET_COLS,
-        "social_cols":    SOCIAL_COLS,
-        "cross_cols":     CROSS_COLS,
+        "timestamp":   datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
+        "market_cols": MARKET_COLS,
+        "social_cols": SOCIAL_COLS,
+        "cross_cols":  CROSS_COLS,
         "shapes": {
             "market_features": list(market_scaled.shape),
             "social_features": list(social_scaled.shape),
             "cross_features":  list(cross_scaled.shape),
         },
-        "splits":  split_meta,
+        "splits":    split_meta,
         "artifacts": {k: str(v) for k, v in paths.items()},
     }
 
@@ -609,21 +595,16 @@ def split_scale_export(
 
 def run_feature_pipeline(
     btc_csv:    Path = BTC_CSV,
-    eth_csv:    Path = ETH_CSV,
-    posts_csv:  Path = POSTS_CSV,
+    posts_json: Path = POSTS_JSON,
     output_dir: Path = OUTPUT_DIR,
-    symbol:     str  = "BTC",      # "BTC" or "ETH"
 ) -> dict:
     """
     Run the full feature matrix pipeline (Steps 1–6).
 
     Returns the summary dict from split_scale_export().
     """
-    csv_map = {"BTC": btc_csv, "ETH": eth_csv}
-    market_csv = csv_map.get(symbol.upper(), btc_csv)
-
-    market_bins = load_and_resample_market(market_csv)
-    social_bins = load_and_bin_social(posts_csv)
+    market_bins = load_and_resample_market(btc_csv)
+    social_bins = load_and_bin_social(posts_json)
     aligned     = join_market_social(market_bins, social_bins)
     aligned     = add_derived_market_features(aligned)
     aligned     = add_cross_modal_features(aligned)
@@ -634,26 +615,23 @@ def run_feature_pipeline(
 # Test
 
 if __name__ == "__main__":
-    print("=" * 55)
-    print("  Feature Matrix Builder — All Steps (1–6)")
-    print("=" * 55)
 
-    summary = run_feature_pipeline(symbol="BTC")
+    summary = run_feature_pipeline()
 
     if summary:
-        print("\n── Final feature shapes ──")
+        print("\n  Final feature shapes ")
         for name, shape in summary["shapes"].items():
             print(f"  {name}: {shape}")
 
-        print("\n── Split breakdown ──")
+        print("\n  Split breakdown ")
         s = summary["splits"]
         print(f"  train: rows 0   → {s['i_val']-1}  ({s['n_train']} rows)")
         print(f"  val:   rows {s['i_val']} → {s['i_test']-1}  ({s['n_val']} rows)")
         print(f"  test:  rows {s['i_test']} → end ({s['n_test']} rows)")
 
-        print("\n── Market columns ──")
+        print("\n Market columns ")
         print(" ", summary["market_cols"])
-        print("\n── Social columns ──")
+        print("\n  Social columns ")
         print(" ", summary["social_cols"])
-        print("\n── Cross-modal columns ──")
+        print("\n  Cross-modal columns ")
         print(" ", summary["cross_cols"])
