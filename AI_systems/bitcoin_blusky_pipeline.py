@@ -33,10 +33,10 @@ QUERY = "bitcoin OR btc"
 EXTRA_QUERY_TERMS = ["crypto"]
 SEARCH_LANGUAGE = "en"
 TARGET_POSTS = 150000
-START_DATE = datetime(2023, 9, 1, tzinfo=timezone.utc)
-END_DATE = datetime(2024, 5, 31, 23, 59, 59, 999999, tzinfo=timezone.utc)
-OUTPUT_FILE = "bitcoin_bluesky_sep2023_may2024.json"
-RUN_REPORT_FILE = "bitcoin_bluesky_run_report_2023_sep_may2024.json"
+START_DATE = datetime(2024, 6, 1, tzinfo=timezone.utc)
+END_DATE = datetime(2025, 1, 1, 23, 59, 59, 999999, tzinfo=timezone.utc)
+OUTPUT_FILE = "bitcoin_bluesky_june2024_jan2025.json"
+RUN_REPORT_FILE = "bitcoin_bluesky_run_report_2024_june_jan2025.json"
 MIN_RELEVANCE_SCORE = 0.25
 SENTIMENT_NEUTRAL_BAND = 0.15
 ML_SENTIMENT_BLEND = 0.7 # 70% lexical (post-level) + 30% cluster profile
