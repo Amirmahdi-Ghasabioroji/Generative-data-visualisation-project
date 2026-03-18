@@ -33,10 +33,10 @@ QUERY = "bitcoin OR btc"
 EXTRA_QUERY_TERMS = ["crypto"]
 SEARCH_LANGUAGE = "en"
 TARGET_POSTS = 150000
-START_DATE = datetime(2023, 1, 1, tzinfo=timezone.utc)
-END_DATE = datetime(2023, 6, 1, 23, 59, 59, 999999, tzinfo=timezone.utc)
-OUTPUT_FILE = "bitcoin_bluesky_jan2023_jun2023.json"
-RUN_REPORT_FILE = "bitcoin_bluesky_run_report_2023_jan_jun.json"
+START_DATE = datetime(2023, 9, 1, tzinfo=timezone.utc)
+END_DATE = datetime(2024, 5, 31, 23, 59, 59, 999999, tzinfo=timezone.utc)
+OUTPUT_FILE = "bitcoin_bluesky_sep2023_may2024.json"
+RUN_REPORT_FILE = "bitcoin_bluesky_run_report_2023_sep_may2024.json"
 MIN_RELEVANCE_SCORE = 0.25
 SENTIMENT_NEUTRAL_BAND = 0.15
 ML_SENTIMENT_BLEND = 0.7 # 70% lexical (post-level) + 30% cluster profile
@@ -813,6 +813,9 @@ def fetch_posts(use_ai_model: bool = False, model_dir: str = DEFAULT_MODEL_DIR):
                                 "sort": "latest",
                             }
                         )
+
+                    # Only count back-to-back failures for skip logic.
+                    consecutive_errors = 0
 
                     posts = _get_any(response, ["posts", "data", "results"], []) or []
                     if not posts:
