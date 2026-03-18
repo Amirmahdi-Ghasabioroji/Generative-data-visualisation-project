@@ -49,8 +49,8 @@ class MappingNetwork(keras.Model):
         # so every visual parameter is on the same scale
         self.output_layer = layers.Dense(theta_dim, activation="sigmoid", name="output")
 
-        # ── HRIDITA: LOSS TRACKERS ────────────────────────────────────────────
-        # Add a keras.metrics.Mean tracker here called self.loss_tracker
+        
+        self.loss_tracker = keras.metrics.Mean(name="loss")
         # ─────────────────────────────────────────────────────────────────────
 
     def call(self, inputs):
@@ -93,31 +93,42 @@ class MappingNetwork(keras.Model):
         super().load_weights(filepath)
         print(f"[✓] Mapping network weights loaded ← {filepath}")
 
-        # ═══════════════════════════════════════════════════════════════════════════
-    # ── HRIDITA: METRICS PROPERTY ────────────────────────────────────────────
-    # Add a @property called metrics that returns [self.loss_tracker]
-    # Keras uses this to reset the tracker at the start of each epoch.
-    # ═══════════════════════════════════════════════════════════════════════════
 
-    # ═══════════════════════════════════════════════════════════════════════════
-    # ── HRIDITA: TRAINING STEP ───────────────────────────────────────────────
-    # Add a custom train_step(self, data) method here.
-    # Inside it should:
-    #   1. Unpack data into (z, theta_target)
-    #   2. Use tf.GradientTape to track gradients
-    #   3. Run forward pass → self(z) → theta_pred
-    #   4. Compute loss between theta_pred and theta_target (MSE)
-    #   5. Apply gradients via self.optimizer
-    #   6. Update self.loss_tracker
-    #   7. Return {"loss": self.loss_tracker.result()}
-    # ═══════════════════════════════════════════════════════════════════════════
-
-    # ═══════════════════════════════════════════════════════════════════════════
-    # ── HRIDITA: FIT / TRAINING LOOP ─────────────────────────────────────────
-    # Add a fit(self, Z, theta_targets, epochs=50, batch_size=32) method here.
-    # It should:
-    #   1. Cast Z and theta_targets to tf.float32
-    #   2. Compile the model with Adam optimiser and MSE loss
-    #   3. Call super().fit() to run the training loop
-    #   4. Print a confirmation when done
-    # ═══════════════════════════════════════════════════════════════════════════
+             
+          @property
+         def metrics(self):
+             return [self.loss_tracker]
+         
+         
+         def train_step(self, data):
+             z, theta_target = data
+             z = tf.convert_to_tensor(z, dtype=tf.float32)
+             theta_target = tf.convert_to_tensor(theta_target, dtype=tf.float32)
+         
+             with tf.GradientTape() as tape:
+                 theta_pred = self(z, training=True)
+                 loss = tf.reduce_mean(tf.keras.losses.mse(theta_target, theta_pred))
+         
+             gradients = tape.gradient(loss, self.trainable_variables)
+             self.optimizer.apply_gradients(zip(gradients, self.trainable_variables))
+         
+             self.loss_tracker.update_state(loss)
+             return {"loss": self.loss_tracker.result()}
+         
+         
+         def fit(self, Z, theta_targets, epochs=50, batch_size=32):
+             Z = tf.convert_to_tensor(Z, dtype=tf.float32)
+             theta_targets = tf.convert_to_tensor(theta_targets, dtype=tf.float32)
+         
+             # Compile model with Adam optimizer (loss is computed in train_step)
+             super().compile(optimizer=tf.keras.optimizers.Adam())
+         
+             # Use Keras fit to handle batching and epochs
+             super().fit(
+                 x=Z,
+                 y=theta_targets,
+                 epochs=epochs,
+                 batch_size=batch_size
+             )
+             print(f"[✓] Mapping network trained for {epochs} epochs")
+             # ═══════════════════════════════════════════════════════════════════════════
