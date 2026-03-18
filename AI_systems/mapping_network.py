@@ -22,11 +22,11 @@ class MappingNetwork(keras.Model):
     """
     Small MLP that maps VAE latent vectors z to visual parameter vectors θ.
 
-    Input  : z of shape (n_samples, latent_dim)  e.g. (300, 32)
+    Input  : z of shape (n_samples, latent_dim)  e.g. (300, 3162)
     Output : θ of shape (n_samples, theta_dim)   e.g. (300, 5)
     """
 
-    def __init__(self, latent_dim: int = 32, theta_dim: int = 5, **kwargs):
+    def __init__(self, latent_dim: int = 16, theta_dim: int = 5, **kwargs):
         """
         Initialises the MappingNetwork.
 
@@ -93,42 +93,46 @@ class MappingNetwork(keras.Model):
         super().load_weights(filepath)
         print(f"[✓] Mapping network weights loaded ← {filepath}")
 
+        @property
+        def metrics(self):
+            return [self.loss_tracker]
+        
+        
+        def train_step(self, data):
+            z, theta_target = data
+            z = tf.convert_to_tensor(z, dtype=tf.float32)
+            theta_target = tf.convert_to_tensor(theta_target, dtype=tf.float32)
+        
+            with tf.GradientTape() as tape:
+                theta_pred = self(z, training=True)
+                loss = tf.reduce_mean(tf.keras.losses.mse(theta_target, theta_pred))
+        
+            gradients = tape.gradient(loss, self.trainable_variables)
+            self.optimizer.apply_gradients(zip(gradients, self.trainable_variables))
+        
+            self.loss_tracker.update_state(loss)
+            return {"loss": self.loss_tracker.result()}
+        
+        
+        def fit(self, Z, theta_targets, epochs=50, batch_size=32):
+            Z = tf.convert_to_tensor(Z, dtype=tf.float32)
+            theta_targets = tf.convert_to_tensor(theta_targets, dtype=tf.float32)
+        
+            # Compile model with Adam optimizer (loss is computed in train_step)
+            super().compile(optimizer=tf.keras.optimizers.Adam())
+        
+            # Use Keras fit to handle batching and epochs
+            super().fit(
+                x=Z,
+                y=theta_targets,
+                epochs=epochs,
+                batch_size=batch_size
+            )
+            print(f"[✓] Mapping network trained for {epochs} epochs")
+            # ═══════════════════════════════════════════════════════════════════════════
+
+
+
 
              
-          @property
-         def metrics(self):
-             return [self.loss_tracker]
          
-         
-         def train_step(self, data):
-             z, theta_target = data
-             z = tf.convert_to_tensor(z, dtype=tf.float32)
-             theta_target = tf.convert_to_tensor(theta_target, dtype=tf.float32)
-         
-             with tf.GradientTape() as tape:
-                 theta_pred = self(z, training=True)
-                 loss = tf.reduce_mean(tf.keras.losses.mse(theta_target, theta_pred))
-         
-             gradients = tape.gradient(loss, self.trainable_variables)
-             self.optimizer.apply_gradients(zip(gradients, self.trainable_variables))
-         
-             self.loss_tracker.update_state(loss)
-             return {"loss": self.loss_tracker.result()}
-         
-         
-         def fit(self, Z, theta_targets, epochs=50, batch_size=32):
-             Z = tf.convert_to_tensor(Z, dtype=tf.float32)
-             theta_targets = tf.convert_to_tensor(theta_targets, dtype=tf.float32)
-         
-             # Compile model with Adam optimizer (loss is computed in train_step)
-             super().compile(optimizer=tf.keras.optimizers.Adam())
-         
-             # Use Keras fit to handle batching and epochs
-             super().fit(
-                 x=Z,
-                 y=theta_targets,
-                 epochs=epochs,
-                 batch_size=batch_size
-             )
-             print(f"[✓] Mapping network trained for {epochs} epochs")
-             # ═══════════════════════════════════════════════════════════════════════════
