@@ -30,13 +30,13 @@ except Exception:
 
 # ================== EDIT THESE SETTINGS ==================
 QUERY = "bitcoin OR btc"
-EXTRA_QUERY_TERMS = ["#bitcoin", "#btc", "crypto"]
+EXTRA_QUERY_TERMS = ["crypto"]
 SEARCH_LANGUAGE = "en"
 TARGET_POSTS = 150000
-START_DATE = datetime(2025, 1, 1, tzinfo=timezone.utc)
-END_DATE = datetime(2025, 12, 31, 23, 59, 59, 999999, tzinfo=timezone.utc)
-OUTPUT_FILE = "bitcoin_bluesky_jan2025_dec2025.json"
-RUN_REPORT_FILE = "bitcoin_bluesky_run_report.json"
+START_DATE = datetime(2023, 1, 1, tzinfo=timezone.utc)
+END_DATE = datetime(2023, 6, 1, 23, 59, 59, 999999, tzinfo=timezone.utc)
+OUTPUT_FILE = "bitcoin_bluesky_jan2023_jun2023.json"
+RUN_REPORT_FILE = "bitcoin_bluesky_run_report_2023_jan_jun.json"
 MIN_RELEVANCE_SCORE = 0.25
 SENTIMENT_NEUTRAL_BAND = 0.15
 ML_SENTIMENT_BLEND = 0.7 # 70% lexical (post-level) + 30% cluster profile
@@ -788,7 +788,6 @@ def fetch_posts(use_ai_model: bool = False, model_dir: str = DEFAULT_MODEL_DIR):
                 break
 
             search_term = term
-            hashtag_fallback_used = False
             search_query = _build_query(search_term, since_date, until_date_exclusive)
             cursor = None
             use_raw_search = False
@@ -864,22 +863,6 @@ def fetch_posts(use_ai_model: bool = False, model_dir: str = DEFAULT_MODEL_DIR):
                         print("[i] Switching to raw API mode due to atproto response validation mismatch.")
                         use_raw_search = True
                         consecutive_errors = 0
-
-                    if (
-                        consecutive_errors >= MAX_CONSECUTIVE_ERRORS_PER_TERM
-                        and search_term.startswith("#")
-                        and not hashtag_fallback_used
-                    ):
-                        fallback_term = search_term[1:].strip()
-                        if fallback_term:
-                            print(f"[i] Term '{search_term}' kept failing; retrying as '{fallback_term}'.")
-                            search_term = fallback_term
-                            search_query = _build_query(search_term, since_date, until_date_exclusive)
-                            cursor = None
-                            use_raw_search = False
-                            consecutive_errors = 0
-                            hashtag_fallback_used = True
-                            continue
 
                     if consecutive_errors >= MAX_CONSECUTIVE_ERRORS_PER_TERM:
                         print(
