@@ -1,0 +1,37 @@
+{
+  "run_id": "1a5c2db8-d00e-40c2-9353-7dd2c9e95284",
+  "generated_at": "2026-03-18T23:51:35+00:00",
+  "query": "bitcoin OR btc",
+  "query_terms": [
+    "bitcoin",
+    "btc",
+    "crypto"
+  ],
+  "language": "en",
+  "target_posts": 150000,
+  "date_range": {
+    "start": "2024-06-01T00:00:00+00:00",
+    "end": "2025-01-01T23:59:59.999999+00:00"
+  },
+  "output_file": "bitcoin_bluesky_june2024_jan2025.json",
+  "posts_saved": 39838,
+  "filtering_stats": {
+    "seen": 89788,
+    "kept": 47002,
+    "classified_ml": 88566,
+    "classified_rules": 0,
+    "dropped_duplicate": 7164,
+    "dropped_missing_text": 1221,
+    "dropped_non_english": 0,
+    "dropped_date": 1,
+    "dropped_low_relevance": 41564,
+    "dropped_spam": 0
+  },
+  "classification_counts": {
+    "ml": 88566,
+    "rules": 0
+  },
+  "relevance_threshold": 0.25,
+  "ai_mode": "ml-unsupervised",
+  "model_dir": "AI_systems\\scraper_model_artifacts"
+}
