@@ -22,40 +22,37 @@ def _first_existing_path(candidates: list[Path]) -> Path:
     return candidates[0]
 
 
-BTC_CSV = _first_existing_path([
-    Path("Data_Pipeline/datasets/btcusdt_30m_20240101_20240930.csv"),
-    Path("datasets/btcusdt_30m_20240101_20240930.csv"),
-])
+def _existing_paths(paths: list[Path]) -> list[Path]:
+    """Return only paths that exist, preserving order."""
+    return [p for p in paths if p.exists()]
 
-# Prefer 2025 split social datasets (Jan-Jun + Jul-Dec), then fallback candidates.
+
+MARKET_CSV_CANDIDATES = [
+    Path("Data_Pipeline/datasets/btcusdt_30m_20230301_20230831.csv"),
+    Path("Data_Pipeline/datasets/btcusdt_30m_20230901_20240601.csv"),
+    Path("Data_Pipeline/datasets/btcusdt_30m_20240101_20250101.csv"),
+    Path("Data_Pipeline/datasets/btcusdt_30m_20250101_20251231.csv"),
+]
+
+MARKET_CSVS = _existing_paths(MARKET_CSV_CANDIDATES)
+if not MARKET_CSVS:
+    MARKET_CSVS = [MARKET_CSV_CANDIDATES[0]]
+
 SOCIAL_JSON_CANDIDATES = [
+    Path("Data_Pipeline/datasets/bitcoin_bluesky_mar2023_aug2023.json"),
+    Path("Data_Pipeline/datasets/bitcoin_bluesky_sep2023_may2024.json"),
+    Path("Data_Pipeline/datasets/bitcoin_bluesky_june2024_jan2025.json"),
     Path("Data_Pipeline/datasets/bitcoin_bluesky_jan2025_jun2025.json"),
     Path("Data_Pipeline/datasets/bitcoin_bluesky_jul2025_dec2025.json"),
-    Path("Data_Pipeline/datasets/bitcoin_bluesky_june2024_jan2025.json"),
-    Path("datasets/bitcoin_bluesky_jan2025_dec2025.json"),
-    Path("../datasets/bitcoin_bluesky_jan2025_dec2025.json"),
 ]
 
 
 def _resolve_social_json_paths(candidates: list[Path]) -> list[Path]:
-    """
-    Select social JSON input deterministically with minimal overlap.
-
-    Priority:
-    1) 2025 split pair: Jan-Jun + Jul-Dec
-    2) Single continuous file: Jun2024-Jan2025
-    3) External full-year candidate
-    """
-    jan_jun = candidates[0]
-    jul_dec = candidates[1]
-    if jan_jun.exists() and jul_dec.exists():
-        return [jan_jun, jul_dec]
-
-    for path in candidates[2:]:
-        if path.exists():
-            return [path]
-
-    return [jan_jun]
+    """Use all existing social shards in chronological order."""
+    existing = [p for p in candidates if p.exists()]
+    if existing:
+        return existing
+    return [candidates[0]]
 
 
 POSTS_JSONS = _resolve_social_json_paths(SOCIAL_JSON_CANDIDATES)
@@ -85,46 +82,52 @@ def _floor_to_window(unix_ts: int, window: int = WINDOW_SECONDS) -> int:
     return (unix_ts // window) * window
 
 
-def load_and_resample_market(csv_path: Path) -> dict[int, dict]:
+def load_and_resample_market(csv_path: Path | list[Path]) -> dict[int, dict]:
 
-    if not csv_path.exists():
-        print(f"[!] CSV not found: {csv_path}")
+    csv_paths = csv_path if isinstance(csv_path, list) else [csv_path]
+    existing_paths = [p for p in csv_paths if p.exists()]
+
+    if not existing_paths:
+        print(f"[!] CSV not found: {csv_paths[0]}")
         return {}
 
     bins: dict[int, dict] = {}
+    loaded_rows = 0
 
-    with csv_path.open("r", newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            try:
-                # File is already 30m bars — use open_time_utc as the window key
-                window_start = _floor_to_window(_parse_ts(row["open_time_utc"]))
+    for market_csv in existing_paths:
+        with market_csv.open("r", newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                try:
+                    # File is already 30m bars — use open_time_utc as the window key
+                    window_start = _floor_to_window(_parse_ts(row["open_time_utc"]))
 
-                total_quote = float(row["quote_asset_volume"])
-                total_taker = float(row["taker_buy_base_asset_volume"])
-                taker_ratio = float(row["taker_ratio"])
+                    total_quote = float(row["quote_asset_volume"])
+                    total_taker = float(row["taker_buy_base_asset_volume"])
+                    taker_ratio = float(row["taker_ratio"])
 
-                bins[window_start] = {
-                    "window_start": window_start,
-                    "open":         float(row["open"]),
-                    "high":         float(row["high"]),
-                    "low":          float(row["low"]),
-                    "close":        float(row["close"]),
-                    "volume":       float(row["volume"]),
-                    "quote_volume": total_quote,
-                    "num_trades":   int(float(row["number_of_trades"])),
-                    "taker_volume": total_taker,
-                    "taker_ratio":  taker_ratio,
-                    "n_raw_rows":   1,
-                }
-            except (ValueError, KeyError):
-                continue  # Skip malformed rows
+                    bins[window_start] = {
+                        "window_start": window_start,
+                        "open":         float(row["open"]),
+                        "high":         float(row["high"]),
+                        "low":          float(row["low"]),
+                        "close":        float(row["close"]),
+                        "volume":       float(row["volume"]),
+                        "quote_volume": total_quote,
+                        "num_trades":   int(float(row["number_of_trades"])),
+                        "taker_volume": total_taker,
+                        "taker_ratio":  taker_ratio,
+                        "n_raw_rows":   1,
+                    }
+                    loaded_rows += 1
+                except (ValueError, KeyError):
+                    continue  # Skip malformed rows
 
     if not bins:
-        print(f"[!] No valid rows loaded from {csv_path.name}")
+        print("[!] No valid rows loaded from provided market CSV files")
         return {}
 
-    print(f"[✓] BTCUSDT: {len(bins)} x 30m bins loaded from {csv_path.name}")
+    print(f"[✓] BTCUSDT: {len(bins)} x 30m bins loaded from {len(existing_paths)} file(s), {loaded_rows} raw rows")
     return bins
 
 
@@ -882,7 +885,7 @@ def split_scale_export(
 # matrices ready for VAE training.
 
 def run_feature_pipeline(
-    btc_csv:    Path = BTC_CSV,
+    btc_csv:    Path | list[Path] = MARKET_CSVS,
     posts_json: Path | list[Path] = POSTS_JSONS,
     output_dir: Path = OUTPUT_DIR,
     context_windows: tuple[int, ...] = (3, 6),
