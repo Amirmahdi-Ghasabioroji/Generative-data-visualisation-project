@@ -8,9 +8,9 @@ Mode:    Batch (train once on dataset, encode for downstream use)
 
 Input layout — flat concatenated vector built from feature_matrix.py output:
     X = np.hstack([market_features, social_features, cross_features])
-    Default shape: (n_samples, 28)
+    Default shape: (n_samples, 42)
         market_features  → 12 cols  (log_return, RSI, volatility, volume, …)
-        social_features  → 13 cols  (post_count, sentiment, engagement, empty flag, …)
+        social_features  → 27 cols  (engagement, ML sentiment/cluster/topic signals, …)
         cross_features   →  3 cols  (sentiment×return, post_count×rv, …)
 
 Architecture — dual-stream encoder, single decoder:
@@ -19,7 +19,7 @@ Architecture — dual-stream encoder, single decoder:
     Cross stream   :  3 → Dense(16,relu)→BN                       →  (16,)
     Merge          : Concat(80) → Dense(64,relu) → Dropout(0.1)
     Latent heads   : z_mean(16), z_log_var(16)
-    Decoder        : 16 → Dense(64,relu)→BN → Dense(80,relu)→BN → Dense(28,linear)
+    Decoder        : 16 → Dense(64,relu)→BN → Dense(80,relu)→BN → Dense(42,linear)
 
 Why dual-stream:
     Market (RSI, log-returns, volatility) and social (engagement, sentiment,
@@ -71,7 +71,7 @@ class VAE(keras.Model):
     Parameters
     ----------
     market_dim   : number of market feature columns        (default 12)
-    social_dim   : number of social feature columns        (default 13)
+    social_dim   : number of social feature columns        (default 27)
     cross_dim    : number of cross-modal feature columns   (default  3)
     latent_dim   : latent space size                       (default 16)
     dropout_rate : dropout on the encoder merge layer      (default 0.1)
@@ -80,7 +80,7 @@ class VAE(keras.Model):
     def __init__(
         self,
         market_dim:   int   = 12,
-        social_dim:   int   = 13,
+        social_dim:   int   = 27,
         cross_dim:    int   = 3,
         latent_dim:   int   = 16,
         dropout_rate: float = 0.1,
@@ -314,23 +314,75 @@ def load_feature_matrix(data_dir: str = "vae_model/data") -> np.ndarray:
     return np.hstack([market, social, cross]).astype(np.float32)
 
 
+def build_temporal_context(X: np.ndarray, context_window: int = 1) -> np.ndarray:
+    """
+    Build flattened rolling windows for temporal context modeling.
+
+    Example: context_window=3 transforms (N, D) -> (N-2, 3D)
+    using [t-2, t-1, t] concatenation at each row t.
+    """
+    if context_window <= 1:
+        return X.astype(np.float32)
+
+    n, d = X.shape
+    if n < context_window:
+        return np.empty((0, d * context_window), dtype=np.float32)
+
+    out = np.empty((n - context_window + 1, d * context_window), dtype=np.float32)
+    for i in range(context_window - 1, n):
+        out[i - context_window + 1] = X[i - context_window + 1: i + 1].reshape(-1)
+    return out
+
+
+def load_feature_matrix_with_context(
+    data_dir: str = "vae_model/data",
+    context_window: int = 1,
+) -> np.ndarray:
+    """
+    Load feature matrix and optionally apply temporal context windowing.
+
+    Prefers precomputed context artifact when available, otherwise builds on load.
+    """
+    if context_window > 1:
+        precomputed = tf.io.gfile.join(data_dir, f"full_features_ctx_w{context_window}.npy")
+        if tf.io.gfile.exists(precomputed):
+            return np.load(precomputed).astype(np.float32)
+
+    base = load_feature_matrix(data_dir=data_dir)
+    return build_temporal_context(base, context_window=context_window)
+
+
+def get_context_dims(
+    context_window: int,
+    market_dim: int = 12,
+    social_dim: int = 27,
+    cross_dim: int = 3,
+) -> tuple[int, int, int]:
+    """Return VAE dims adjusted for flattened temporal windows."""
+    return (
+        market_dim * context_window,
+        social_dim * context_window,
+        cross_dim * context_window,
+    )
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
     tf.random.set_seed(42)
     np.random.seed(42)
 
     print("=" * 60)
-    print("  VAE smoke test  —  market + social + cross  (28-dim)")
+    print("  VAE smoke test  —  market + social + cross  (42-dim)")
     print("=" * 60)
 
     # Simulate 500 samples of 30-minute BTC windows
     n = 500
     market = np.random.normal(size=(n, 12)).astype(np.float32)
-    social = np.random.normal(size=(n, 13)).astype(np.float32)
+    social = np.random.normal(size=(n, 27)).astype(np.float32)
     cross  = np.random.normal(size=(n,  3)).astype(np.float32)
-    X = np.hstack([market, social, cross])   # shape (500, 28)
+    X = np.hstack([market, social, cross])   # shape (500, 42)
 
-    vae = VAE(market_dim=12, social_dim=13, cross_dim=3, latent_dim=16)
+    vae = VAE(market_dim=12, social_dim=27, cross_dim=3, latent_dim=16)
     vae.fit(X, epochs=2, batch_size=64)
 
     latent = vae.encode(X)

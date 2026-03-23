@@ -10,6 +10,7 @@ import json
 import numpy as np
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+from collections import Counter
 
 
 
@@ -25,11 +26,39 @@ BTC_CSV = _first_existing_path([
     Path("Data_Pipeline/datasets/btcusdt_30m_20240101_20240930.csv"),
     Path("datasets/btcusdt_30m_20240101_20240930.csv"),
 ])
-POSTS_JSON = _first_existing_path([
-    Path("Data_Pipeline/datasets/bitcoin_bluesky_jan2024_sep2024.json"),
+
+# Prefer 2025 split social datasets (Jan-Jun + Jul-Dec), then fallback candidates.
+SOCIAL_JSON_CANDIDATES = [
+    Path("Data_Pipeline/datasets/bitcoin_bluesky_jan2025_jun2025.json"),
+    Path("Data_Pipeline/datasets/bitcoin_bluesky_jul2025_dec2025.json"),
+    Path("Data_Pipeline/datasets/bitcoin_bluesky_june2024_jan2025.json"),
     Path("datasets/bitcoin_bluesky_jan2025_dec2025.json"),
     Path("../datasets/bitcoin_bluesky_jan2025_dec2025.json"),
-])
+]
+
+
+def _resolve_social_json_paths(candidates: list[Path]) -> list[Path]:
+    """
+    Select social JSON input deterministically with minimal overlap.
+
+    Priority:
+    1) 2025 split pair: Jan-Jun + Jul-Dec
+    2) Single continuous file: Jun2024-Jan2025
+    3) External full-year candidate
+    """
+    jan_jun = candidates[0]
+    jul_dec = candidates[1]
+    if jan_jun.exists() and jul_dec.exists():
+        return [jan_jun, jul_dec]
+
+    for path in candidates[2:]:
+        if path.exists():
+            return [path]
+
+    return [jan_jun]
+
+
+POSTS_JSONS = _resolve_social_json_paths(SOCIAL_JSON_CANDIDATES)
 OUTPUT_DIR = Path("vae_model/data")
 
 WINDOW_SECONDS = 30 * 60  # 30 minutes in seconds
@@ -131,17 +160,26 @@ def _lexicon_sentiment(text: str) -> tuple[int, int]:
     return bullish, bearish
 
 
-def load_and_bin_social(posts_json: Path) -> dict[int, dict]:
+def load_and_bin_social(posts_json: Path | list[Path]) -> dict[int, dict]:
 
-    if not posts_json.exists():
-        print(f"[!] JSON not found: {posts_json}")
+    json_paths = posts_json if isinstance(posts_json, list) else [posts_json]
+    existing_paths = [p for p in json_paths if p.exists()]
+
+    if not existing_paths:
+        print(f"[!] JSON not found: {json_paths[0]}")
         return {}
 
-    with posts_json.open("r", encoding="utf-8") as f:
-        raw_posts = json.load(f)
+    raw_posts = []
+    for json_path in existing_paths:
+        with json_path.open("r", encoding="utf-8") as f:
+            loaded = json.load(f)
+        if not isinstance(loaded, list):
+            print(f"[!] Expected a JSON array in {json_path.name}; skipping.")
+            continue
+        raw_posts.extend(loaded)
 
-    if not isinstance(raw_posts, list):
-        print(f"[!] Expected a JSON array in {posts_json.name}")
+    if not raw_posts:
+        print("[!] No valid social posts loaded from provided JSON files.")
         return {}
 
     # Group raw posts by 30m window
@@ -162,6 +200,19 @@ def load_and_bin_social(posts_json: Path) -> dict[int, dict]:
             follower_count = float(post.get("author_follower_count", 0) or 0)
             text           = post.get("text",       "") or ""
             author_did     = post.get("author_did", "") or ""
+            fear_greed     = float(post.get("fear_greed_score", 0.0) or 0.0)
+            cluster_id     = int(float(post.get("cluster_id", -1) or -1))
+            sentiment_lbl  = str(post.get("sentiment_label", "neutral") or "neutral").lower().strip()
+
+            topic_conf = post.get("topic_confidence", {}) or {}
+            if not isinstance(topic_conf, dict):
+                topic_conf = {}
+            topic_price_action = float(topic_conf.get("price_action", 0.0) or 0.0)
+            topic_volatility   = float(topic_conf.get("volatility", 0.0) or 0.0)
+            topic_macro        = float(topic_conf.get("macro", 0.0) or 0.0)
+            topic_regulation   = float(topic_conf.get("regulation", 0.0) or 0.0)
+            topic_etf          = float(topic_conf.get("etf", 0.0) or 0.0)
+            topic_adoption     = float(topic_conf.get("adoption", 0.0) or 0.0)
         except (ValueError, TypeError):
             continue
 
@@ -176,6 +227,15 @@ def load_and_bin_social(posts_json: Path) -> dict[int, dict]:
             "bullish_hits":   bullish_hits,
             "bearish_hits":   bearish_hits,
             "author_did":     author_did,
+            "fear_greed":     fear_greed,
+            "cluster_id":     cluster_id,
+            "sentiment_lbl":  sentiment_lbl,
+            "topic_price_action": topic_price_action,
+            "topic_volatility":   topic_volatility,
+            "topic_macro":        topic_macro,
+            "topic_regulation":   topic_regulation,
+            "topic_etf":          topic_etf,
+            "topic_adoption":     topic_adoption,
         })
 
     if not raw_bins:
@@ -195,6 +255,32 @@ def load_and_bin_social(posts_json: Path) -> dict[int, dict]:
         bullish_hits    = [p["bullish_hits"]   for p in posts]
         bearish_hits    = [p["bearish_hits"]   for p in posts]
         unique_authors  = len(set(p["author_did"] for p in posts if p["author_did"]))
+        fear_greed_vals = [p["fear_greed"] for p in posts]
+
+        sentiment_counter = Counter(p["sentiment_lbl"] for p in posts)
+        fear_n = sentiment_counter.get("fear", 0)
+        neutral_n = sentiment_counter.get("neutral", 0)
+        greed_n = sentiment_counter.get("greed", 0)
+
+        cluster_ids = [p["cluster_id"] for p in posts if p["cluster_id"] >= 0]
+        unique_cluster_count = len(set(cluster_ids))
+        if cluster_ids:
+            cluster_counts = Counter(cluster_ids)
+            probs = np.array(list(cluster_counts.values()), dtype=np.float64) / len(cluster_ids)
+            cluster_entropy = float(-np.sum(probs * np.log(probs + 1e-12)))
+            norm_den = np.log(len(cluster_counts)) if len(cluster_counts) > 1 else 1.0
+            cluster_entropy_norm = float(cluster_entropy / norm_den) if norm_den > 0 else 0.0
+            cluster_unique_ratio = unique_cluster_count / max(1, len(cluster_ids))
+        else:
+            cluster_entropy_norm = 0.0
+            cluster_unique_ratio = 0.0
+
+        topic_price_action_vals = [p["topic_price_action"] for p in posts]
+        topic_volatility_vals   = [p["topic_volatility"] for p in posts]
+        topic_macro_vals        = [p["topic_macro"] for p in posts]
+        topic_regulation_vals   = [p["topic_regulation"] for p in posts]
+        topic_etf_vals          = [p["topic_etf"] for p in posts]
+        topic_adoption_vals     = [p["topic_adoption"] for p in posts]
 
         total_bullish = sum(bullish_hits)
         total_bearish = sum(bearish_hits)
@@ -228,11 +314,26 @@ def load_and_bin_social(posts_json: Path) -> dict[int, dict]:
             "word_count_mean":       sum(word_counts)     / n,
             # Author reach
             "author_followers_mean": sum(follower_counts) / n,
+            # ML-derived features
+            "fear_greed_mean":       float(np.mean(fear_greed_vals)) if fear_greed_vals else 0.0,
+            "fear_greed_std":        float(np.std(fear_greed_vals)) if len(fear_greed_vals) > 1 else 0.0,
+            "sentiment_fear_share":    fear_n / n,
+            "sentiment_neutral_share": neutral_n / n,
+            "sentiment_greed_share":   greed_n / n,
+            "sentiment_label_net":   (greed_n - fear_n) / n,
+            "cluster_unique_ratio":  cluster_unique_ratio,
+            "cluster_entropy":       cluster_entropy_norm,
+            "topic_price_action_mean": float(np.mean(topic_price_action_vals)) if topic_price_action_vals else 0.0,
+            "topic_volatility_mean":   float(np.mean(topic_volatility_vals)) if topic_volatility_vals else 0.0,
+            "topic_macro_mean":        float(np.mean(topic_macro_vals)) if topic_macro_vals else 0.0,
+            "topic_regulation_mean":   float(np.mean(topic_regulation_vals)) if topic_regulation_vals else 0.0,
+            "topic_etf_mean":          float(np.mean(topic_etf_vals)) if topic_etf_vals else 0.0,
+            "topic_adoption_mean":     float(np.mean(topic_adoption_vals)) if topic_adoption_vals else 0.0,
             # Flag (always 0 here — set to 1 during join for empty windows)
             "social_empty_flag":     0,
         }
 
-    print(f"[✓] Social: {len(bins)} x 30m bins from {sum(len(v) for v in raw_bins.values())} posts")
+    print(f"[✓] Social: {len(bins)} x 30m bins from {sum(len(v) for v in raw_bins.values())} posts across {len(existing_paths)} file(s)")
     return bins
 
 
@@ -257,6 +358,20 @@ _EMPTY_SOCIAL = {
     "bull_bear_ratio":       0.0,
     "word_count_mean":       0.0,
     "author_followers_mean": 0.0,
+    "fear_greed_mean":       0.0,
+    "fear_greed_std":        0.0,
+    "sentiment_fear_share":    0.0,
+    "sentiment_neutral_share": 0.0,
+    "sentiment_greed_share":   0.0,
+    "sentiment_label_net":   0.0,
+    "cluster_unique_ratio":  0.0,
+    "cluster_entropy":       0.0,
+    "topic_price_action_mean": 0.0,
+    "topic_volatility_mean":   0.0,
+    "topic_macro_mean":        0.0,
+    "topic_regulation_mean":   0.0,
+    "topic_etf_mean":          0.0,
+    "topic_adoption_mean":     0.0,
     "social_empty_flag":     1,
 }
 
@@ -299,6 +414,20 @@ def join_market_social(
             "bull_bear_ratio":       social_row["bull_bear_ratio"],
             "word_count_mean":       social_row["word_count_mean"],
             "author_followers_mean": social_row["author_followers_mean"],
+            "fear_greed_mean":       social_row["fear_greed_mean"],
+            "fear_greed_std":        social_row["fear_greed_std"],
+            "sentiment_fear_share":    social_row["sentiment_fear_share"],
+            "sentiment_neutral_share": social_row["sentiment_neutral_share"],
+            "sentiment_greed_share":   social_row["sentiment_greed_share"],
+            "sentiment_label_net":   social_row["sentiment_label_net"],
+            "cluster_unique_ratio":  social_row["cluster_unique_ratio"],
+            "cluster_entropy":       social_row["cluster_entropy"],
+            "topic_price_action_mean": social_row["topic_price_action_mean"],
+            "topic_volatility_mean":   social_row["topic_volatility_mean"],
+            "topic_macro_mean":        social_row["topic_macro_mean"],
+            "topic_regulation_mean":   social_row["topic_regulation_mean"],
+            "topic_etf_mean":          social_row["topic_etf_mean"],
+            "topic_adoption_mean":     social_row["topic_adoption_mean"],
             "social_empty_flag":     social_row["social_empty_flag"],
         }
         aligned.append(merged)
@@ -459,13 +588,14 @@ def add_cross_modal_features(aligned: list[dict]) -> list[dict]:
 # 6
 # SPLIT, SCALE, AND EXPORT
 # Splits aligned rows chronologically into
-# train / val / test, fits a min-max scaler on train only,
-# applies it to all splits, then exports:
+# train / val / test, fits scalers on train only,
+# applies them to all splits, then exports:
 #   - market_features.npy   (n, 12)
-#   - social_features.npy   (n, 13)  includes author_followers_mean
+#   - social_features.npy   (n, 27)  includes ML-derived social classifier features
 #   - cross_features.npy    (n, 3)
-#   - full_features.npy     (n, 28) [market(12), social(13), cross(3)]
+#   - full_features.npy     (n, 42) [market(12), social(27), cross(3)]
 #   - timestamps.npy        (n,)    unix seconds
+#   - full_features_ctx_w{K}.npy  temporal window features (optional)
 #   - summary.json          run metadata
 
 # Feature column definitions — order matters for numpy arrays
@@ -478,7 +608,13 @@ SOCIAL_COLS = [
     "post_count", "unique_authors", "engagement_sum", "like_mean",
     "repost_mean", "reply_mean", "bullish_hits_sum", "bearish_hits_sum",
     "sentiment_net", "bull_bear_ratio", "word_count_mean",
-    "author_followers_mean", "social_empty_flag",
+    "author_followers_mean",
+    "fear_greed_mean", "fear_greed_std",
+    "sentiment_fear_share", "sentiment_neutral_share", "sentiment_greed_share", "sentiment_label_net",
+    "cluster_unique_ratio", "cluster_entropy",
+    "topic_price_action_mean", "topic_volatility_mean", "topic_macro_mean",
+    "topic_regulation_mean", "topic_etf_mean", "topic_adoption_mean",
+    "social_empty_flag",
 ]
 CROSS_COLS = [
     "sentiment_net_x_return", "post_count_x_volatility", "engagement_x_volume",
@@ -505,11 +641,97 @@ def _minmax_scale(
     return (scale(train),) + tuple(scale(o) for o in others)
 
 
+def _robust_scale(
+    train: np.ndarray,
+    *others: np.ndarray,
+    clip: float = 8.0,
+) -> tuple[np.ndarray, ...]:
+    """
+    Fit robust scaler on train (median / IQR), apply to train + others.
+    Designed for heavy-tailed social features.
+    """
+    median = np.median(train, axis=0)
+    q1 = np.percentile(train, 25, axis=0)
+    q3 = np.percentile(train, 75, axis=0)
+    iqr = q3 - q1
+    iqr[iqr == 0] = 1.0
+
+    def scale(arr: np.ndarray) -> np.ndarray:
+        out = (arr - median) / iqr
+        return np.clip(out, -clip, clip)
+
+    return (scale(train),) + tuple(scale(o) for o in others)
+
+
+def _build_temporal_context(X: np.ndarray, window_size: int) -> np.ndarray:
+    """
+    Flatten rolling temporal windows: [t-window+1 ... t] -> one feature row.
+
+    If window_size = 1, returns X unchanged.
+    """
+    if window_size <= 1:
+        return X.copy()
+
+    n, d = X.shape
+    if n < window_size:
+        return np.empty((0, d * window_size), dtype=X.dtype)
+
+    out = np.empty((n - window_size + 1, d * window_size), dtype=X.dtype)
+    for i in range(window_size - 1, n):
+        out[i - window_size + 1] = X[i - window_size + 1: i + 1].reshape(-1)
+    return out
+
+
+def _compute_drift_metrics(
+    train: np.ndarray,
+    val: np.ndarray,
+    test: np.ndarray,
+    cols: list[str],
+    top_k: int = 5,
+) -> dict:
+    """
+    Compute simple drift diagnostics using train as baseline.
+    """
+    eps = 1e-8
+    train_mean = train.mean(axis=0)
+    train_std = train.std(axis=0)
+
+    def split_metrics(split: np.ndarray) -> dict:
+        split_mean = split.mean(axis=0)
+        split_std = split.std(axis=0)
+
+        mean_shift = np.abs(split_mean - train_mean) / (train_std + eps)
+        std_ratio = split_std / (train_std + eps)
+
+        top_idx = np.argsort(mean_shift)[::-1][:top_k]
+        top_features = [
+            {
+                "col": cols[int(i)],
+                "mean_shift_z": float(mean_shift[int(i)]),
+                "std_ratio": float(std_ratio[int(i)]),
+            }
+            for i in top_idx
+        ]
+
+        return {
+            "mean_shift_z_avg": float(np.mean(mean_shift)),
+            "mean_shift_z_max": float(np.max(mean_shift)),
+            "std_ratio_avg": float(np.mean(std_ratio)),
+            "top_features": top_features,
+        }
+
+    return {
+        "val": split_metrics(val),
+        "test": split_metrics(test),
+    }
+
+
 def split_scale_export(
     aligned: list[dict],
     output_dir: Path = OUTPUT_DIR,
     train_frac: float = 0.7,
     val_frac:   float = 0.15,
+    context_windows: tuple[int, ...] = (3, 6),
 ) -> dict:
 
     n = len(aligned)
@@ -549,8 +771,11 @@ def split_scale_export(
     c_train, c_val, c_test = split(cross_raw)
     ts_train, ts_val, ts_test = split(timestamps)
 
+    # Scaling strategy:
+    # - Market/Cross: min-max (bounded dynamics)
+    # - Social: robust scaling (heavy-tailed engagement/classification stats)
     m_train, m_val, m_test = _minmax_scale(m_train, m_val, m_test)
-    s_train, s_val, s_test = _minmax_scale(s_train, s_val, s_test)
+    s_train, s_val, s_test = _robust_scale(s_train, s_val, s_test, clip=8.0)
     c_train, c_val, c_test = _minmax_scale(c_train, c_val, c_test)
 
     market_scaled = np.vstack([m_train, m_val, m_test])
@@ -571,6 +796,30 @@ def split_scale_export(
     np.save(paths["full_features"],   full_features)
     np.save(paths["timestamps"],      timestamps)
 
+    temporal_artifacts = {}
+    for window in sorted(set(context_windows)):
+        if window <= 1:
+            continue
+        ctx = _build_temporal_context(full_features, window)
+        ts_ctx = timestamps[window - 1:]
+
+        ctx_key = f"full_features_ctx_w{window}"
+        ts_key = f"timestamps_ctx_w{window}"
+        ctx_path = output_dir / f"full_features_ctx_w{window}.npy"
+        ts_path = output_dir / f"timestamps_ctx_w{window}.npy"
+
+        np.save(ctx_path, ctx)
+        np.save(ts_path, ts_ctx)
+
+        temporal_artifacts[ctx_key] = {
+            "path": str(ctx_path),
+            "shape": list(ctx.shape),
+        }
+        temporal_artifacts[ts_key] = {
+            "path": str(ts_path),
+            "shape": list(ts_ctx.shape),
+        }
+
     split_meta = {
         "n_total": n,
         "n_train": int(i_val),
@@ -578,6 +827,12 @@ def split_scale_export(
         "n_test":  int(n - i_test),
         "i_val":   int(i_val),
         "i_test":  int(i_test),
+    }
+
+    drift = {
+        "market": _compute_drift_metrics(m_train, m_val, m_test, MARKET_COLS),
+        "social": _compute_drift_metrics(s_train, s_val, s_test, SOCIAL_COLS),
+        "cross": _compute_drift_metrics(c_train, c_val, c_test, CROSS_COLS),
     }
 
     summary = {
@@ -591,6 +846,13 @@ def split_scale_export(
             "cross_features":  list(cross_scaled.shape),
             "full_features":   list(full_features.shape),
         },
+        "temporal_context": temporal_artifacts,
+        "scaling": {
+            "market": "minmax",
+            "social": "robust_iqr_clip8",
+            "cross": "minmax",
+        },
+        "drift": drift,
         "splits":    split_meta,
         "artifacts": {k: str(v) for k, v in paths.items()},
     }
@@ -603,6 +865,12 @@ def split_scale_export(
     print(f"    market_features : {market_scaled.shape}")
     print(f"    social_features : {social_scaled.shape}")
     print(f"    cross_features  : {cross_scaled.shape}")
+    for window in sorted(set(context_windows)):
+        if window <= 1:
+            continue
+        key = f"full_features_ctx_w{window}"
+        if key in temporal_artifacts:
+            print(f"    {key:<17}: {tuple(temporal_artifacts[key]['shape'])}")
     print(f"    split           : train={split_meta['n_train']} | val={split_meta['n_val']} | test={split_meta['n_test']}")
     print(f"    summary         : {summary_path}")
     return summary
@@ -615,8 +883,9 @@ def split_scale_export(
 
 def run_feature_pipeline(
     btc_csv:    Path = BTC_CSV,
-    posts_json: Path = POSTS_JSON,
+    posts_json: Path | list[Path] = POSTS_JSONS,
     output_dir: Path = OUTPUT_DIR,
+    context_windows: tuple[int, ...] = (3, 6),
 ) -> dict:
     """
     Run the full feature matrix pipeline (Steps 1–6).
@@ -628,7 +897,7 @@ def run_feature_pipeline(
     aligned     = join_market_social(market_bins, social_bins)
     aligned     = add_derived_market_features(aligned)
     aligned     = add_cross_modal_features(aligned)
-    summary     = split_scale_export(aligned, output_dir)
+    summary     = split_scale_export(aligned, output_dir, context_windows=context_windows)
     return summary
 
 

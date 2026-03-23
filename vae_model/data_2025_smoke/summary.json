@@ -1,0 +1,84 @@
+{
+  "timestamp": "2026-03-23T23:13:35+00:00",
+  "market_cols": [
+    "log_return_close",
+    "high_low_range_pct",
+    "rv_6",
+    "rv_12",
+    "log_volume",
+    "volume_z_48",
+    "number_of_trades",
+    "volume_per_trade",
+    "taker_ratio",
+    "delta_taker_ratio",
+    "ema_gap_6_24",
+    "rsi_14"
+  ],
+  "social_cols": [
+    "post_count",
+    "unique_authors",
+    "engagement_sum",
+    "like_mean",
+    "repost_mean",
+    "reply_mean",
+    "bullish_hits_sum",
+    "bearish_hits_sum",
+    "sentiment_net",
+    "bull_bear_ratio",
+    "word_count_mean",
+    "author_followers_mean",
+    "fear_greed_mean",
+    "fear_greed_std",
+    "sentiment_fear_share",
+    "sentiment_neutral_share",
+    "sentiment_greed_share",
+    "sentiment_label_net",
+    "cluster_unique_ratio",
+    "cluster_entropy",
+    "topic_price_action_mean",
+    "topic_volatility_mean",
+    "topic_macro_mean",
+    "topic_regulation_mean",
+    "topic_etf_mean",
+    "topic_adoption_mean",
+    "social_empty_flag"
+  ],
+  "cross_cols": [
+    "sentiment_net_x_return",
+    "post_count_x_volatility",
+    "engagement_x_volume"
+  ],
+  "shapes": {
+    "market_features": [
+      17472,
+      12
+    ],
+    "social_features": [
+      17472,
+      27
+    ],
+    "cross_features": [
+      17472,
+      3
+    ],
+    "full_features": [
+      17472,
+      42
+    ]
+  },
+  "splits": {
+    "n_total": 17472,
+    "n_train": 12230,
+    "n_val": 2620,
+    "n_test": 2622,
+    "i_val": 12230,
+    "i_test": 14850
+  },
+  "artifacts": {
+    "market_features": "vae_model\\data_2025_smoke\\market_features.npy",
+    "social_features": "vae_model\\data_2025_smoke\\social_features.npy",
+    "cross_features": "vae_model\\data_2025_smoke\\cross_features.npy",
+    "full_features": "vae_model\\data_2025_smoke\\full_features.npy",
+    "timestamps": "vae_model\\data_2025_smoke\\timestamps.npy"
+  }
+}
