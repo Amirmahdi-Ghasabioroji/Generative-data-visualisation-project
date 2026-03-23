@@ -34,6 +34,9 @@ Dependencies:
 """
 import numpy as np
 import tensorflow as tf
+import argparse
+import json
+from pathlib import Path
 keras = tf.keras
 layers = tf.keras.layers
 
@@ -161,7 +164,7 @@ class VAE(keras.Model):
     # Single stream — latent space is already fused across modalities.
     # Symmetric expansion back to full input_dim.
     #
-    #  z(16) → Dense(64)→BN → Dense(80)→BN → Dense(27, linear)
+    #  z(16) → Dense(64)→BN → Dense(80)→BN → Dense(input_dim, linear)
     # ─────────────────────────────────────────────────────────────────────────
     def _build_decoder(self) -> keras.Model:
         z_input = keras.Input(shape=(self.latent_dim,), name="decoder_input")
@@ -366,26 +369,119 @@ def get_context_dims(
     )
 
 
+def train_from_feature_artifacts(
+    data_dir: str,
+    context_window: int = 1,
+    epochs: int = 30,
+    batch_size: int = 128,
+    latent_dim: int = 16,
+    weights_out: str = "AI_systems/vae_weights.weights.h5",
+    latent_out: str = "AI_systems/latent_vectors.npy",
+    summary_out: str = "AI_systems/vae_training_summary.json",
+) -> dict:
+    """Train VAE from exported feature artifacts and save model outputs."""
+    X = load_feature_matrix_with_context(data_dir=data_dir, context_window=context_window)
+    if X.size == 0:
+        raise ValueError("Loaded feature matrix is empty. Check feature exports/context window.")
+
+    if context_window > 1:
+        m_dim, s_dim, c_dim = get_context_dims(context_window)
+    else:
+        m_dim, s_dim, c_dim = 12, 27, 3
+
+    vae = VAE(
+        market_dim=m_dim,
+        social_dim=s_dim,
+        cross_dim=c_dim,
+        latent_dim=latent_dim,
+    )
+
+    print(f"[i] Training VAE on X shape={X.shape}, context_window={context_window}")
+    vae.fit(X, epochs=epochs, batch_size=batch_size)
+
+    latent = vae.encode(X)
+
+    Path(weights_out).parent.mkdir(parents=True, exist_ok=True)
+    Path(latent_out).parent.mkdir(parents=True, exist_ok=True)
+    Path(summary_out).parent.mkdir(parents=True, exist_ok=True)
+
+    vae.save_weights(weights_out)
+    np.save(latent_out, latent.astype(np.float32))
+
+    summary = {
+        "data_dir": data_dir,
+        "context_window": int(context_window),
+        "input_shape": [int(X.shape[0]), int(X.shape[1])],
+        "latent_shape": [int(latent.shape[0]), int(latent.shape[1])],
+        "dims": {
+            "market_dim": int(m_dim),
+            "social_dim": int(s_dim),
+            "cross_dim": int(c_dim),
+            "input_dim": int(m_dim + s_dim + c_dim),
+            "latent_dim": int(latent_dim),
+        },
+        "epochs": int(epochs),
+        "batch_size": int(batch_size),
+        "artifacts": {
+            "weights": weights_out,
+            "latent_vectors": latent_out,
+        },
+    }
+    with open(summary_out, "w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2)
+
+    print(f"[✓] Latent vectors saved → {latent_out}")
+    print(f"[✓] Training summary saved → {summary_out}")
+    return summary
+
+
+def _run_smoke_test():
+    """Small synthetic run for quick dev checks."""
+    print("=" * 60)
+    print("  VAE smoke test  —  market + social + cross  (42-dim)")
+    print("=" * 60)
+
+    n = 500
+    market = np.random.normal(size=(n, 12)).astype(np.float32)
+    social = np.random.normal(size=(n, 27)).astype(np.float32)
+    cross  = np.random.normal(size=(n,  3)).astype(np.float32)
+    X = np.hstack([market, social, cross])
+
+    vae = VAE(market_dim=12, social_dim=27, cross_dim=3, latent_dim=16)
+    vae.fit(X, epochs=2, batch_size=64)
+    latent = vae.encode(X)
+    print(f"[✓] Input shape  : {X.shape}")
+    print(f"[✓] Latent shape : {latent.shape}")
+    print("[✓] Done")
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
     tf.random.set_seed(42)
     np.random.seed(42)
 
-    print("=" * 60)
-    print("  VAE smoke test  —  market + social + cross  (42-dim)")
-    print("=" * 60)
+    parser = argparse.ArgumentParser(description="Train VAE on exported feature artifacts.")
+    parser.add_argument("--data-dir", default="vae_model/data", help="Directory containing feature .npy files")
+    parser.add_argument("--context-window", type=int, default=1, help="Temporal context window size")
+    parser.add_argument("--epochs", type=int, default=30, help="Training epochs")
+    parser.add_argument("--batch-size", type=int, default=128, help="Training batch size")
+    parser.add_argument("--latent-dim", type=int, default=16, help="Latent dimension")
+    parser.add_argument("--weights-out", default="AI_systems/vae_weights.weights.h5", help="Output VAE weights path")
+    parser.add_argument("--latent-out", default="AI_systems/latent_vectors.npy", help="Output latent vectors path")
+    parser.add_argument("--summary-out", default="AI_systems/vae_training_summary.json", help="Output training summary path")
+    parser.add_argument("--smoke", action="store_true", help="Run synthetic smoke test instead of real training")
+    args = parser.parse_args()
 
-    # Simulate 500 samples of 30-minute BTC windows
-    n = 500
-    market = np.random.normal(size=(n, 12)).astype(np.float32)
-    social = np.random.normal(size=(n, 27)).astype(np.float32)
-    cross  = np.random.normal(size=(n,  3)).astype(np.float32)
-    X = np.hstack([market, social, cross])   # shape (500, 42)
-
-    vae = VAE(market_dim=12, social_dim=27, cross_dim=3, latent_dim=16)
-    vae.fit(X, epochs=2, batch_size=64)
-
-    latent = vae.encode(X)
-    print(f"[✓] Input shape  : {X.shape}")
-    print(f"[✓] Latent shape : {latent.shape}")   # expect (500, 16)
-    print("[✓] Done")
+    if args.smoke:
+        _run_smoke_test()
+    else:
+        train_from_feature_artifacts(
+            data_dir=args.data_dir,
+            context_window=args.context_window,
+            epochs=args.epochs,
+            batch_size=args.batch_size,
+            latent_dim=args.latent_dim,
+            weights_out=args.weights_out,
+            latent_out=args.latent_out,
+            summary_out=args.summary_out,
+        )
