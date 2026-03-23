@@ -289,6 +289,10 @@ class VAE(keras.Model):
     # ─────────────────────────────────────────────────────────────────────────
     def save_weights(self, filepath: str):
         """Save trained weights.  e.g. vae.save_weights('AI_systems/vae_weights')"""
+        # Custom train_step uses encoder/decoder directly, so build the outer
+        # model graph explicitly before saving to satisfy Keras checks.
+        dummy = tf.zeros((1, self.input_dim))
+        self(dummy)
         super().save_weights(filepath)
         print(f"[✓] VAE weights saved → {filepath}")
 
