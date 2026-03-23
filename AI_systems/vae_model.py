@@ -8,9 +8,9 @@ Mode:    Batch (train once on dataset, encode for downstream use)
 
 Input layout — flat concatenated vector built from feature_matrix.py output:
     X = np.hstack([market_features, social_features, cross_features])
-    Default shape: (n_samples, 27)
+    Default shape: (n_samples, 28)
         market_features  → 12 cols  (log_return, RSI, volatility, volume, …)
-        social_features  → 12 cols  (post_count, sentiment, engagement, …)
+        social_features  → 13 cols  (post_count, sentiment, engagement, empty flag, …)
         cross_features   →  3 cols  (sentiment×return, post_count×rv, …)
 
 Architecture — dual-stream encoder, single decoder:
@@ -19,7 +19,7 @@ Architecture — dual-stream encoder, single decoder:
     Cross stream   :  3 → Dense(16,relu)→BN                       →  (16,)
     Merge          : Concat(80) → Dense(64,relu) → Dropout(0.1)
     Latent heads   : z_mean(16), z_log_var(16)
-    Decoder        : 16 → Dense(64,relu)→BN → Dense(80,relu)→BN → Dense(27,linear)
+    Decoder        : 16 → Dense(64,relu)→BN → Dense(80,relu)→BN → Dense(28,linear)
 
 Why dual-stream:
     Market (RSI, log-returns, volatility) and social (engagement, sentiment,
@@ -71,7 +71,7 @@ class VAE(keras.Model):
     Parameters
     ----------
     market_dim   : number of market feature columns        (default 12)
-    social_dim   : number of social feature columns        (default 12)
+    social_dim   : number of social feature columns        (default 13)
     cross_dim    : number of cross-modal feature columns   (default  3)
     latent_dim   : latent space size                       (default 16)
     dropout_rate : dropout on the encoder merge layer      (default 0.1)
@@ -80,7 +80,7 @@ class VAE(keras.Model):
     def __init__(
         self,
         market_dim:   int   = 12,
-        social_dim:   int   = 12,
+        social_dim:   int   = 13,
         cross_dim:    int   = 3,
         latent_dim:   int   = 16,
         dropout_rate: float = 0.1,
@@ -298,23 +298,39 @@ class VAE(keras.Model):
         print(f"[✓] VAE weights loaded ← {filepath}")
 
 
+def load_feature_matrix(data_dir: str = "vae_model/data") -> np.ndarray:
+    """
+    Load the combined feature matrix exported by feature_matrix.py.
+
+    Prefers full_features.npy and falls back to hstacking the 3 split files.
+    """
+    base = tf.io.gfile.join(data_dir, "full_features.npy")
+    if tf.io.gfile.exists(base):
+        return np.load(base).astype(np.float32)
+
+    market = np.load(tf.io.gfile.join(data_dir, "market_features.npy"))
+    social = np.load(tf.io.gfile.join(data_dir, "social_features.npy"))
+    cross = np.load(tf.io.gfile.join(data_dir, "cross_features.npy"))
+    return np.hstack([market, social, cross]).astype(np.float32)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
     tf.random.set_seed(42)
     np.random.seed(42)
 
     print("=" * 60)
-    print("  VAE smoke test  —  market + social + cross  (27-dim)")
+    print("  VAE smoke test  —  market + social + cross  (28-dim)")
     print("=" * 60)
 
     # Simulate 500 samples of 30-minute BTC windows
     n = 500
     market = np.random.normal(size=(n, 12)).astype(np.float32)
-    social = np.random.normal(size=(n, 12)).astype(np.float32)
+    social = np.random.normal(size=(n, 13)).astype(np.float32)
     cross  = np.random.normal(size=(n,  3)).astype(np.float32)
-    X = np.hstack([market, social, cross])   # shape (500, 27)
+    X = np.hstack([market, social, cross])   # shape (500, 28)
 
-    vae = VAE(market_dim=12, social_dim=12, cross_dim=3, latent_dim=16)
+    vae = VAE(market_dim=12, social_dim=13, cross_dim=3, latent_dim=16)
     vae.fit(X, epochs=2, batch_size=64)
 
     latent = vae.encode(X)

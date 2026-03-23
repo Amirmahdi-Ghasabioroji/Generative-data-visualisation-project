@@ -13,8 +13,23 @@ from pathlib import Path
 
 
 
-BTC_CSV    = Path("Data_Pipeline/datasets/btcusdt_30m_20240101_20240930.csv")
-POSTS_JSON = Path("Data_Pipeline/datasets/bitcoin_bluesky_jan2024_sep2024.json")
+def _first_existing_path(candidates: list[Path]) -> Path:
+    """Return the first existing candidate path, otherwise the first candidate."""
+    for path in candidates:
+        if path.exists():
+            return path
+    return candidates[0]
+
+
+BTC_CSV = _first_existing_path([
+    Path("Data_Pipeline/datasets/btcusdt_30m_20240101_20240930.csv"),
+    Path("datasets/btcusdt_30m_20240101_20240930.csv"),
+])
+POSTS_JSON = _first_existing_path([
+    Path("Data_Pipeline/datasets/bitcoin_bluesky_jan2024_sep2024.json"),
+    Path("datasets/bitcoin_bluesky_jan2025_dec2025.json"),
+    Path("../datasets/bitcoin_bluesky_jan2025_dec2025.json"),
+])
 OUTPUT_DIR = Path("vae_model/data")
 
 WINDOW_SECONDS = 30 * 60  # 30 minutes in seconds
@@ -449,7 +464,8 @@ def add_cross_modal_features(aligned: list[dict]) -> list[dict]:
 #   - market_features.npy   (n, 12)
 #   - social_features.npy   (n, 13)  includes author_followers_mean
 #   - cross_features.npy    (n, 3)
-#   - timestamps.npy        (n,)   unix seconds
+#   - full_features.npy     (n, 28) [market(12), social(13), cross(3)]
+#   - timestamps.npy        (n,)    unix seconds
 #   - summary.json          run metadata
 
 # Feature column definitions — order matters for numpy arrays
@@ -540,16 +556,19 @@ def split_scale_export(
     market_scaled = np.vstack([m_train, m_val, m_test])
     social_scaled = np.vstack([s_train, s_val, s_test])
     cross_scaled  = np.vstack([c_train, c_val, c_test])
+    full_features = np.hstack([market_scaled, social_scaled, cross_scaled])
 
     paths = {
         "market_features": output_dir / "market_features.npy",
         "social_features": output_dir / "social_features.npy",
         "cross_features":  output_dir / "cross_features.npy",
+        "full_features":   output_dir / "full_features.npy",
         "timestamps":      output_dir / "timestamps.npy",
     }
     np.save(paths["market_features"], market_scaled)
     np.save(paths["social_features"], social_scaled)
     np.save(paths["cross_features"],  cross_scaled)
+    np.save(paths["full_features"],   full_features)
     np.save(paths["timestamps"],      timestamps)
 
     split_meta = {
@@ -570,6 +589,7 @@ def split_scale_export(
             "market_features": list(market_scaled.shape),
             "social_features": list(social_scaled.shape),
             "cross_features":  list(cross_scaled.shape),
+            "full_features":   list(full_features.shape),
         },
         "splits":    split_meta,
         "artifacts": {k: str(v) for k, v in paths.items()},
