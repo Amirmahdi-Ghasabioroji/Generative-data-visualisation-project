@@ -1,0 +1,297 @@
+{
+  "timestamp": "2026-03-23T23:19:42+00:00",
+  "market_cols": [
+    "log_return_close",
+    "high_low_range_pct",
+    "rv_6",
+    "rv_12",
+    "log_volume",
+    "volume_z_48",
+    "number_of_trades",
+    "volume_per_trade",
+    "taker_ratio",
+    "delta_taker_ratio",
+    "ema_gap_6_24",
+    "rsi_14"
+  ],
+  "social_cols": [
+    "post_count",
+    "unique_authors",
+    "engagement_sum",
+    "like_mean",
+    "repost_mean",
+    "reply_mean",
+    "bullish_hits_sum",
+    "bearish_hits_sum",
+    "sentiment_net",
+    "bull_bear_ratio",
+    "word_count_mean",
+    "author_followers_mean",
+    "fear_greed_mean",
+    "fear_greed_std",
+    "sentiment_fear_share",
+    "sentiment_neutral_share",
+    "sentiment_greed_share",
+    "sentiment_label_net",
+    "cluster_unique_ratio",
+    "cluster_entropy",
+    "topic_price_action_mean",
+    "topic_volatility_mean",
+    "topic_macro_mean",
+    "topic_regulation_mean",
+    "topic_etf_mean",
+    "topic_adoption_mean",
+    "social_empty_flag"
+  ],
+  "cross_cols": [
+    "sentiment_net_x_return",
+    "post_count_x_volatility",
+    "engagement_x_volume"
+  ],
+  "shapes": {
+    "market_features": [
+      17472,
+      12
+    ],
+    "social_features": [
+      17472,
+      27
+    ],
+    "cross_features": [
+      17472,
+      3
+    ],
+    "full_features": [
+      17472,
+      42
+    ]
+  },
+  "temporal_context": {
+    "full_features_ctx_w3": {
+      "path": "vae_model\\data_2025_smoke_v2\\full_features_ctx_w3.npy",
+      "shape": [
+        17470,
+        126
+      ]
+    },
+    "timestamps_ctx_w3": {
+      "path": "vae_model\\data_2025_smoke_v2\\timestamps_ctx_w3.npy",
+      "shape": [
+        17470
+      ]
+    },
+    "full_features_ctx_w6": {
+      "path": "vae_model\\data_2025_smoke_v2\\full_features_ctx_w6.npy",
+      "shape": [
+        17467,
+        252
+      ]
+    },
+    "timestamps_ctx_w6": {
+      "path": "vae_model\\data_2025_smoke_v2\\timestamps_ctx_w6.npy",
+      "shape": [
+        17467
+      ]
+    }
+  },
+  "scaling": {
+    "market": "minmax",
+    "social": "robust_iqr_clip8",
+    "cross": "minmax"
+  },
+  "drift": {
+    "market": {
+      "val": {
+        "mean_shift_z_avg": 0.10830372192237585,
+        "mean_shift_z_max": 0.509648832547431,
+        "std_ratio_avg": 0.9921102777888743,
+        "top_features": [
+          {
+            "col": "volume_per_trade",
+            "mean_shift_z": 0.509648832547431,
+            "std_ratio": 0.7486938971253767
+          },
+          {
+            "col": "number_of_trades",
+            "mean_shift_z": 0.15566911192551539,
+            "std_ratio": 1.209075251684803
+          },
+          {
+            "col": "rv_12",
+            "mean_shift_z": 0.13205243650420576,
+            "std_ratio": 1.049924946121689
+          },
+          {
+            "col": "rv_6",
+            "mean_shift_z": 0.11858215165081298,
+            "std_ratio": 1.0531973390597218
+          },
+          {
+            "col": "high_low_range_pct",
+            "mean_shift_z": 0.11526441886879538,
+            "std_ratio": 1.0398620149600644
+          }
+        ]
+      },
+      "test": {
+        "mean_shift_z_avg": 0.18490878817757272,
+        "mean_shift_z_max": 0.9783319600554494,
+        "std_ratio_avg": 0.9963022389740446,
+        "top_features": [
+          {
+            "col": "volume_per_trade",
+            "mean_shift_z": 0.9783319600554494,
+            "std_ratio": 0.607992737813196
+          },
+          {
+            "col": "number_of_trades",
+            "mean_shift_z": 0.5039850759961476,
+            "std_ratio": 1.2218283141487079
+          },
+          {
+            "col": "rv_12",
+            "mean_shift_z": 0.15532527743452446,
+            "std_ratio": 0.9592810111374338
+          },
+          {
+            "col": "high_low_range_pct",
+            "mean_shift_z": 0.154700858638738,
+            "std_ratio": 0.9721756427960129
+          },
+          {
+            "col": "ema_gap_6_24",
+            "mean_shift_z": 0.12935829624226097,
+            "std_ratio": 1.1106193577428547
+          }
+        ]
+      }
+    },
+    "social": {
+      "val": {
+        "mean_shift_z_avg": 0.3256392795409784,
+        "mean_shift_z_max": 0.5938933033248973,
+        "std_ratio_avg": 0.9203264433587907,
+        "top_features": [
+          {
+            "col": "topic_etf_mean",
+            "mean_shift_z": 0.5938933033248973,
+            "std_ratio": 0.9525927367791798
+          },
+          {
+            "col": "sentiment_neutral_share",
+            "mean_shift_z": 0.5806109785769441,
+            "std_ratio": 0.7936152834864607
+          },
+          {
+            "col": "cluster_entropy",
+            "mean_shift_z": 0.5767618940157518,
+            "std_ratio": 0.7390010877829164
+          },
+          {
+            "col": "word_count_mean",
+            "mean_shift_z": 0.5714297640955928,
+            "std_ratio": 0.7597309496254014
+          },
+          {
+            "col": "social_empty_flag",
+            "mean_shift_z": 0.5711245478737216,
+            "std_ratio": 0.7306170825176647
+          }
+        ]
+      },
+      "test": {
+        "mean_shift_z_avg": 0.2438244223803305,
+        "mean_shift_z_max": 0.6050151377137022,
+        "std_ratio_avg": 0.987158222508203,
+        "top_features": [
+          {
+            "col": "bearish_hits_sum",
+            "mean_shift_z": 0.6050151377137022,
+            "std_ratio": 1.5963709017612304
+          },
+          {
+            "col": "sentiment_fear_share",
+            "mean_shift_z": 0.46824110200304436,
+            "std_ratio": 1.1581241894831262
+          },
+          {
+            "col": "fear_greed_std",
+            "mean_shift_z": 0.36222691060087675,
+            "std_ratio": 0.9624935322646322
+          },
+          {
+            "col": "cluster_entropy",
+            "mean_shift_z": 0.35528401058951864,
+            "std_ratio": 0.8927443756337797
+          },
+          {
+            "col": "unique_authors",
+            "mean_shift_z": 0.35138085665612245,
+            "std_ratio": 1.0244501025771484
+          }
+        ]
+      }
+    },
+    "cross": {
+      "val": {
+        "mean_shift_z_avg": 0.07236438086889314,
+        "mean_shift_z_max": 0.18114101408671485,
+        "std_ratio_avg": 0.863482696690287,
+        "top_features": [
+          {
+            "col": "post_count_x_volatility",
+            "mean_shift_z": 0.18114101408671485,
+            "std_ratio": 0.8754077865347173
+          },
+          {
+            "col": "sentiment_net_x_return",
+            "mean_shift_z": 0.021762636093425856,
+            "std_ratio": 1.0465135356407793
+          },
+          {
+            "col": "engagement_x_volume",
+            "mean_shift_z": 0.014189492426538724,
+            "std_ratio": 0.6685267678953642
+          }
+        ]
+      },
+      "test": {
+        "mean_shift_z_avg": 0.17094189366182214,
+        "mean_shift_z_max": 0.4181304844162146,
+        "std_ratio_avg": 1.4574962929433248,
+        "top_features": [
+          {
+            "col": "post_count_x_volatility",
+            "mean_shift_z": 0.4181304844162146,
+            "std_ratio": 1.5623832676173548
+          },
+          {
+            "col": "sentiment_net_x_return",
+            "mean_shift_z": 0.06033318145757947,
+            "std_ratio": 1.7898114750150393
+          },
+          {
+            "col": "engagement_x_volume",
+            "mean_shift_z": 0.034362015111672375,
+            "std_ratio": 1.0202941361975804
+          }
+        ]
+      }
+    }
+  },
+  "splits": {
+    "n_total": 17472,
+    "n_train": 12230,
+    "n_val": 2620,
+    "n_test": 2622,
+    "i_val": 12230,
+    "i_test": 14850
+  },
+  "artifacts": {
+    "market_features": "vae_model\\data_2025_smoke_v2\\market_features.npy",
+    "social_features": "vae_model\\data_2025_smoke_v2\\social_features.npy",
+    "cross_features": "vae_model\\data_2025_smoke_v2\\cross_features.npy",
+    "full_features": "vae_model\\data_2025_smoke_v2\\full_features.npy",
+    "timestamps": "vae_model\\data_2025_smoke_v2\\timestamps.npy"
+  }
+}
