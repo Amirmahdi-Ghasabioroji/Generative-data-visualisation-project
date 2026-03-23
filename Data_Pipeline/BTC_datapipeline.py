@@ -30,12 +30,12 @@ INTERVAL = "30m"
 INTERVAL_MS = 30 * 60 * 1000
 LIMIT = 1000
 
-# End is exclusive so we capture all candles up to 2024-09-30 23:00 UTC
-START_UTC = datetime(2024, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
-END_EXCLUSIVE_UTC = datetime(2024, 10, 1, 0, 0, 0, tzinfo=timezone.utc)
+# End is exclusive so we capture all candles up to 2024-6-1 23:00 UTC
+START_UTC = datetime(2023, 9, 1, 0, 0, 0, tzinfo=timezone.utc)
+END_EXCLUSIVE_UTC = datetime(2024, 6, 1, 0, 0, 0, tzinfo=timezone.utc)
 
 OUTPUT_DIR = Path(__file__).resolve().parent / "datasets"
-OUTPUT_FILE = OUTPUT_DIR / "btcusdt_30m_20240101_20240930.csv"
+OUTPUT_FILE = OUTPUT_DIR / "btcusdt_30m_20230901_20240601.csv"
 
 CSV_COLUMNS = [
 	"open_time_utc",
