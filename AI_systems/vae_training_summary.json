@@ -1,0 +1,25 @@
+{
+  "data_dir": "vae_model/data",
+  "context_window": 1,
+  "input_shape": [
+    49678,
+    42
+  ],
+  "latent_shape": [
+    49678,
+    16
+  ],
+  "dims": {
+    "market_dim": 12,
+    "social_dim": 27,
+    "cross_dim": 3,
+    "input_dim": 42,
+    "latent_dim": 16
+  },
+  "epochs": 30,
+  "batch_size": 128,
+  "artifacts": {
+    "weights": "AI_systems/vae_weights.weights.h5",
+    "latent_vectors": "AI_systems/latent_vectors.npy"
+  }
+}

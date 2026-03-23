@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-03-17T14:51:12+00:00",
+  "timestamp": "2026-03-23T23:31:59+00:00",
   "market_cols": [
     "log_return_close",
     "high_low_range_pct",
@@ -27,6 +27,20 @@
     "bull_bear_ratio",
     "word_count_mean",
     "author_followers_mean",
+    "fear_greed_mean",
+    "fear_greed_std",
+    "sentiment_fear_share",
+    "sentiment_neutral_share",
+    "sentiment_greed_share",
+    "sentiment_label_net",
+    "cluster_unique_ratio",
+    "cluster_entropy",
+    "topic_price_action_mean",
+    "topic_volatility_mean",
+    "topic_macro_mean",
+    "topic_regulation_mean",
+    "topic_etf_mean",
+    "topic_adoption_mean",
     "social_empty_flag"
   ],
   "cross_cols": [
@@ -36,30 +50,248 @@
   ],
   "shapes": {
     "market_features": [
-      13152,
+      49678,
       12
     ],
     "social_features": [
-      13152,
-      13
+      49678,
+      27
     ],
     "cross_features": [
-      13152,
+      49678,
       3
+    ],
+    "full_features": [
+      49678,
+      42
     ]
   },
+  "temporal_context": {
+    "full_features_ctx_w3": {
+      "path": "vae_model\\data\\full_features_ctx_w3.npy",
+      "shape": [
+        49676,
+        126
+      ]
+    },
+    "timestamps_ctx_w3": {
+      "path": "vae_model\\data\\timestamps_ctx_w3.npy",
+      "shape": [
+        49676
+      ]
+    },
+    "full_features_ctx_w6": {
+      "path": "vae_model\\data\\full_features_ctx_w6.npy",
+      "shape": [
+        49673,
+        252
+      ]
+    },
+    "timestamps_ctx_w6": {
+      "path": "vae_model\\data\\timestamps_ctx_w6.npy",
+      "shape": [
+        49673
+      ]
+    }
+  },
+  "scaling": {
+    "market": "minmax",
+    "social": "robust_iqr_clip8",
+    "cross": "minmax"
+  },
+  "drift": {
+    "market": {
+      "val": {
+        "mean_shift_z_avg": 0.20663894076393394,
+        "mean_shift_z_max": 1.1336835762889987,
+        "std_ratio_avg": 0.9636231603805556,
+        "top_features": [
+          {
+            "col": "volume_per_trade",
+            "mean_shift_z": 1.1336835762889987,
+            "std_ratio": 0.1739864464577339
+          },
+          {
+            "col": "log_volume",
+            "mean_shift_z": 0.6636963498424566,
+            "std_ratio": 0.9214911299019275
+          },
+          {
+            "col": "number_of_trades",
+            "mean_shift_z": 0.3395840063225994,
+            "std_ratio": 1.0756768623157342
+          },
+          {
+            "col": "taker_ratio",
+            "mean_shift_z": 0.0903171934697257,
+            "std_ratio": 1.3910146185567058
+          },
+          {
+            "col": "rv_12",
+            "mean_shift_z": 0.0828808326770101,
+            "std_ratio": 0.9084526244435229
+          }
+        ]
+      },
+      "test": {
+        "mean_shift_z_avg": 0.2797431167472494,
+        "mean_shift_z_max": 1.2287298364211965,
+        "std_ratio_avg": 0.9272742073133285,
+        "top_features": [
+          {
+            "col": "volume_per_trade",
+            "mean_shift_z": 1.2287298364211965,
+            "std_ratio": 0.13915227696955074
+          },
+          {
+            "col": "log_volume",
+            "mean_shift_z": 0.8120662229858658,
+            "std_ratio": 0.874774376593937
+          },
+          {
+            "col": "number_of_trades",
+            "mean_shift_z": 0.4859109352363072,
+            "std_ratio": 1.1966476505416264
+          },
+          {
+            "col": "rv_12",
+            "mean_shift_z": 0.19609629420161948,
+            "std_ratio": 0.8216140045130966
+          },
+          {
+            "col": "rv_6",
+            "mean_shift_z": 0.17163475020898775,
+            "std_ratio": 0.8324167437964486
+          }
+        ]
+      }
+    },
+    "social": {
+      "val": {
+        "mean_shift_z_avg": 0.34952506228061897,
+        "mean_shift_z_max": 1.1225181741956238,
+        "std_ratio_avg": 1.19684024965234,
+        "top_features": [
+          {
+            "col": "post_count",
+            "mean_shift_z": 1.1225181741956238,
+            "std_ratio": 2.131876266988379
+          },
+          {
+            "col": "unique_authors",
+            "mean_shift_z": 1.0445957444150245,
+            "std_ratio": 2.0139690443133373
+          },
+          {
+            "col": "bullish_hits_sum",
+            "mean_shift_z": 0.8247017998813572,
+            "std_ratio": 1.9845875716708228
+          },
+          {
+            "col": "bull_bear_ratio",
+            "mean_shift_z": 0.7624977137482044,
+            "std_ratio": 1.9474257008555398
+          },
+          {
+            "col": "bearish_hits_sum",
+            "mean_shift_z": 0.7311617714561365,
+            "std_ratio": 2.1096814135337425
+          }
+        ]
+      },
+      "test": {
+        "mean_shift_z_avg": 0.6062641714793062,
+        "mean_shift_z_max": 1.9105117416684974,
+        "std_ratio_avg": 1.1484352360985601,
+        "top_features": [
+          {
+            "col": "post_count",
+            "mean_shift_z": 1.9105117416684974,
+            "std_ratio": 2.054360430422605
+          },
+          {
+            "col": "unique_authors",
+            "mean_shift_z": 1.8463174799726403,
+            "std_ratio": 1.928811889185243
+          },
+          {
+            "col": "bearish_hits_sum",
+            "mean_shift_z": 1.431131165637723,
+            "std_ratio": 2.742618776238284
+          },
+          {
+            "col": "bullish_hits_sum",
+            "mean_shift_z": 1.1305668916242329,
+            "std_ratio": 1.925416927285506
+          },
+          {
+            "col": "fear_greed_std",
+            "mean_shift_z": 1.112893835287668,
+            "std_ratio": 1.0541979783296158
+          }
+        ]
+      }
+    },
+    "cross": {
+      "val": {
+        "mean_shift_z_avg": 0.2747593608445697,
+        "mean_shift_z_max": 0.634081652734772,
+        "std_ratio_avg": 1.7833593536228165,
+        "top_features": [
+          {
+            "col": "post_count_x_volatility",
+            "mean_shift_z": 0.634081652734772,
+            "std_ratio": 1.7473842616525574
+          },
+          {
+            "col": "engagement_x_volume",
+            "mean_shift_z": 0.17809887828714838,
+            "std_ratio": 1.8784117430387492
+          },
+          {
+            "col": "sentiment_net_x_return",
+            "mean_shift_z": 0.012097551511788684,
+            "std_ratio": 1.724282056177143
+          }
+        ]
+      },
+      "test": {
+        "mean_shift_z_avg": 0.38214038510165677,
+        "mean_shift_z_max": 0.9652181145260202,
+        "std_ratio_avg": 1.7562094577035392,
+        "top_features": [
+          {
+            "col": "post_count_x_volatility",
+            "mean_shift_z": 0.9652181145260202,
+            "std_ratio": 1.9811180195194833
+          },
+          {
+            "col": "engagement_x_volume",
+            "mean_shift_z": 0.13071886244943343,
+            "std_ratio": 1.2193000094351703
+          },
+          {
+            "col": "sentiment_net_x_return",
+            "mean_shift_z": 0.05048417832951647,
+            "std_ratio": 2.068210344155964
+          }
+        ]
+      }
+    }
+  },
   "splits": {
-    "n_total": 13152,
-    "n_train": 9206,
-    "n_val": 1972,
-    "n_test": 1974,
-    "i_val": 9206,
-    "i_test": 11178
+    "n_total": 49678,
+    "n_train": 34774,
+    "n_val": 7451,
+    "n_test": 7453,
+    "i_val": 34774,
+    "i_test": 42225
   },
   "artifacts": {
-    "market_features": "vae_model/data/market_features.npy",
-    "social_features": "vae_model/data/social_features.npy",
-    "cross_features": "vae_model/data/cross_features.npy",
-    "timestamps": "vae_model/data/timestamps.npy"
+    "market_features": "vae_model\\data\\market_features.npy",
+    "social_features": "vae_model\\data\\social_features.npy",
+    "cross_features": "vae_model\\data\\cross_features.npy",
+    "full_features": "vae_model\\data\\full_features.npy",
+    "timestamps": "vae_model\\data\\timestamps.npy"
   }
 }
