@@ -7,6 +7,9 @@ Stack: TensorFlow + Keras + numpy
 
 import numpy as np
 import tensorflow as tf
+import argparse
+import json
+from pathlib import Path
 from tensorflow import keras
 from tensorflow.keras import layers
 
@@ -186,6 +189,9 @@ class MappingNetwork(keras.Model):
         return self(z, training=False).numpy()
 
     def save_weights(self, filepath: str):
+        # Ensure model graph is built before saving.
+        dummy = tf.zeros((1, self.latent_dim))
+        self(dummy)
         super().save_weights(filepath)
         print(f"[✓] Mapping network weights saved → {filepath}")
 
@@ -196,10 +202,91 @@ class MappingNetwork(keras.Model):
         print(f"[✓] Mapping network weights loaded ← {filepath}")
 
 
-if __name__ == "__main__":
-    tf.random.set_seed(42)
-    np.random.seed(42)
+def train_from_artifacts(
+    latent_path: str = "AI_systems/latent_vectors.npy",
+    features_dir: str = "vae_model/data",
+    epochs: int = 30,
+    batch_size: int = 128,
+    learning_rate: float = 1e-3,
+    weights_out: str = "AI_systems/mapping_network.weights.h5",
+    theta_targets_out: str = "AI_systems/theta_targets.npy",
+    theta_pred_out: str = "AI_systems/theta_pred.npy",
+    summary_out: str = "AI_systems/mapping_training_summary.json",
+) -> dict:
+    """
+    Train mapping network from real artifacts exported by previous pipeline stages.
+    """
+    z = np.load(latent_path).astype(np.float32)
+    market = np.load(str(Path(features_dir) / "market_features.npy")).astype(np.float32)
+    social = np.load(str(Path(features_dir) / "social_features.npy")).astype(np.float32)
+    cross = np.load(str(Path(features_dir) / "cross_features.npy")).astype(np.float32)
 
+    n_z = len(z)
+    n_feat = min(len(market), len(social), len(cross))
+    n_use = min(n_z, n_feat)
+    if n_use <= 0:
+        raise ValueError("No usable rows found in latent/features artifacts.")
+
+    # Align from the tail so context-window VAE outputs map to latest feature rows.
+    if n_z != n_feat:
+        print(f"[i] Row mismatch detected (latent={n_z}, features={n_feat}); aligning tail to {n_use} rows")
+    z = z[-n_use:]
+    market = market[-n_use:]
+    social = social[-n_use:]
+    cross = cross[-n_use:]
+
+    model = MappingNetwork(latent_dim=z.shape[1], theta_dim=5)
+    theta_targets = model.fit_from_features(
+        Z=z,
+        market_features=market,
+        social_features=social,
+        cross_features=cross,
+        epochs=epochs,
+        batch_size=batch_size,
+        learning_rate=learning_rate,
+    )
+    theta_pred = model.map_latent(z)
+
+    Path(weights_out).parent.mkdir(parents=True, exist_ok=True)
+    Path(theta_targets_out).parent.mkdir(parents=True, exist_ok=True)
+    Path(theta_pred_out).parent.mkdir(parents=True, exist_ok=True)
+    Path(summary_out).parent.mkdir(parents=True, exist_ok=True)
+
+    model.save_weights(weights_out)
+    np.save(theta_targets_out, theta_targets.astype(np.float32))
+    np.save(theta_pred_out, theta_pred.astype(np.float32))
+
+    mse = float(np.mean((theta_pred - theta_targets) ** 2))
+    summary = {
+        "latent_path": latent_path,
+        "features_dir": features_dir,
+        "rows_used": int(n_use),
+        "latent_shape": [int(z.shape[0]), int(z.shape[1])],
+        "theta_shape": [int(theta_pred.shape[0]), int(theta_pred.shape[1])],
+        "training": {
+            "epochs": int(epochs),
+            "batch_size": int(batch_size),
+            "learning_rate": float(learning_rate),
+            "train_mse": mse,
+        },
+        "artifacts": {
+            "weights": weights_out,
+            "theta_targets": theta_targets_out,
+            "theta_pred": theta_pred_out,
+        },
+    }
+
+    with open(summary_out, "w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2)
+
+    print(f"[✓] Theta targets saved → {theta_targets_out}")
+    print(f"[✓] Theta predictions saved → {theta_pred_out}")
+    print(f"[✓] Mapping summary saved → {summary_out}")
+    return summary
+
+
+def _run_smoke_test():
+    """Small synthetic run for quick dev checks."""
     n = 400
     z = np.random.normal(size=(n, 16)).astype(np.float32)
     market = np.random.normal(size=(n, 12)).astype(np.float32)
@@ -219,3 +306,36 @@ if __name__ == "__main__":
     print(f"[✓] z shape      : {z.shape}")
     print(f"[✓] theta shape  : {theta_pred.shape}")
     print("[✓] Mapping network smoke test done")
+
+
+if __name__ == "__main__":
+    tf.random.set_seed(42)
+    np.random.seed(42)
+
+    parser = argparse.ArgumentParser(description="Train mapping network on real VAE + feature artifacts.")
+    parser.add_argument("--latent-path", default="AI_systems/latent_vectors.npy", help="Path to latent vectors .npy")
+    parser.add_argument("--features-dir", default="vae_model/data", help="Directory containing market/social/cross feature .npy files")
+    parser.add_argument("--epochs", type=int, default=30, help="Training epochs")
+    parser.add_argument("--batch-size", type=int, default=128, help="Training batch size")
+    parser.add_argument("--learning-rate", type=float, default=1e-3, help="Adam learning rate")
+    parser.add_argument("--weights-out", default="AI_systems/mapping_network.weights.h5", help="Output mapping weights path")
+    parser.add_argument("--theta-targets-out", default="AI_systems/theta_targets.npy", help="Output theta targets path")
+    parser.add_argument("--theta-pred-out", default="AI_systems/theta_pred.npy", help="Output theta predictions path")
+    parser.add_argument("--summary-out", default="AI_systems/mapping_training_summary.json", help="Output training summary path")
+    parser.add_argument("--smoke", action="store_true", help="Run synthetic smoke test instead of real training")
+    args = parser.parse_args()
+
+    if args.smoke:
+        _run_smoke_test()
+    else:
+        train_from_artifacts(
+            latent_path=args.latent_path,
+            features_dir=args.features_dir,
+            epochs=args.epochs,
+            batch_size=args.batch_size,
+            learning_rate=args.learning_rate,
+            weights_out=args.weights_out,
+            theta_targets_out=args.theta_targets_out,
+            theta_pred_out=args.theta_pred_out,
+            summary_out=args.summary_out,
+        )
