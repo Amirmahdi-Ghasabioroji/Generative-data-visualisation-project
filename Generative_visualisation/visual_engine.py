@@ -136,7 +136,7 @@ class VisualEngine:
 
         self.interpret_text = self.fig.text(
             0.69,
-            0.33,
+            0.42,
             self._build_interpretation_panel(),
             color="white",
             fontsize=8,
@@ -146,20 +146,21 @@ class VisualEngine:
             bbox={"facecolor": "#0f172a", "alpha": 0.52, "edgecolor": "#334155", "pad": 6},
         )
 
-        self.heatmap_ax = self.fig.add_axes([0.69, 0.06, 0.27, 0.05])
+        self.heatmap_ax = self.fig.add_axes([0.69, 0.09, 0.27, 0.05])
         gradient = np.linspace(0, 1, 256, dtype=np.float32).reshape(1, -1)
         self.heatmap_ax.imshow(gradient, aspect="auto", cmap="RdYlBu", extent=[0, 1, 0, 1])
         self.heatmap_ax.set_yticks([])
         self.heatmap_ax.set_xticks([0.0, 0.5, 1.0])
         self.heatmap_ax.set_xticklabels(["bearish (cold)", "neutral", "bullish (warm)"], color="white", fontsize=8)
+        self.heatmap_ax.set_title("Particle colour heatmap (RdYlBu)", color="white", fontsize=8, pad=2)
         self.heatmap_ax.set_facecolor("#0b1220")
         for spine in self.heatmap_ax.spines.values():
             spine.set_edgecolor("#334155")
 
         self.heatmap_text = self.fig.text(
             0.69,
-            0.14,
-            "Particle colour heatmap (RdYlBu) — Color dynamics reflect market sentiment",
+            0.24,
+            "Colour meaning: blues=bearish/calm, reds=bullish/chaotic",
             color="#cbd5e1",
             fontsize=7.5,
             va="top",
@@ -484,8 +485,8 @@ class VisualEngine:
         radius_next = np.clip(radius - inward * radial_norm + breathing + radial_noise, 0.04, 1.22)
 
         next_pos = np.column_stack([radius_next * np.cos(theta_next), radius_next * np.sin(theta_next)]).astype(np.float32)
-        # Reverted: tighter spiral constraint
-        self.velocities = 0.78 * self.velocities + 0.22 * (next_pos - self.positions)
+        # Loosen constraint: reduce spiral snap-back, allow more natural drift
+        self.velocities = 0.75 * self.velocities + 0.25 * (next_pos - self.positions)
         self.positions = next_pos
 
         radius = np.linalg.norm(self.positions, axis=1)
