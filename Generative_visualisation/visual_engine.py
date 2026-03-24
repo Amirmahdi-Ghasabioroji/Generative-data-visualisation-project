@@ -45,7 +45,7 @@ class VisualEngine:
 
         self.frame_idx = 0
         self.smoothing_alpha = 0.10
-        self.tick_interval_ms = 18
+        self.tick_interval_ms = 21
         self.current_params = {
             "motion_intensity": 0.5,
             "particle_density": 0.5,
@@ -136,7 +136,7 @@ class VisualEngine:
 
         self.interpret_text = self.fig.text(
             0.69,
-            0.30,
+            0.33,
             self._build_interpretation_panel(),
             color="white",
             fontsize=8,
@@ -146,21 +146,20 @@ class VisualEngine:
             bbox={"facecolor": "#0f172a", "alpha": 0.52, "edgecolor": "#334155", "pad": 6},
         )
 
-        self.heatmap_ax = self.fig.add_axes([0.69, 0.09, 0.27, 0.05])
+        self.heatmap_ax = self.fig.add_axes([0.69, 0.06, 0.27, 0.05])
         gradient = np.linspace(0, 1, 256, dtype=np.float32).reshape(1, -1)
         self.heatmap_ax.imshow(gradient, aspect="auto", cmap="RdYlBu", extent=[0, 1, 0, 1])
         self.heatmap_ax.set_yticks([])
         self.heatmap_ax.set_xticks([0.0, 0.5, 1.0])
         self.heatmap_ax.set_xticklabels(["bearish (cold)", "neutral", "bullish (warm)"], color="white", fontsize=8)
-        self.heatmap_ax.set_title("Particle colour heatmap (RdYlBu)", color="white", fontsize=8, pad=2)
         self.heatmap_ax.set_facecolor("#0b1220")
         for spine in self.heatmap_ax.spines.values():
             spine.set_edgecolor("#334155")
 
         self.heatmap_text = self.fig.text(
             0.69,
-            0.058,
-            "Colour meaning: cooler tones = calmer/steady states, warmer tones = stronger activity and energy",
+            0.14,
+            "Particle colour heatmap (RdYlBu) — Color dynamics reflect market sentiment",
             color="#cbd5e1",
             fontsize=7.5,
             va="top",
@@ -227,12 +226,13 @@ class VisualEngine:
 
         return (
             "Market condition\n"
-            f"turbulence  : {turbulence:0.3f}\n"
-            f"trend bias  : {trend_bias:0.3f}\n"
-            f"distortion  : {distortion:0.3f}\n"
-            f"fragmentation: {fragmentation:0.3f}\n"
-            f"velocity    : {velocity:0.3f}\n"
-            f"quality     : {quality:0.3f}"
+            "─────────────────\n"
+            f"turbulence  : {turbulence:0.3f}  [volatility]\n"
+            f"trend bias  : {trend_bias:0.3f}  [0=bear 1=bull]\n"
+            f"distortion  : {distortion:0.3f}  [regime shift]\n"
+            f"fragmentation: {fragmentation:0.3f}  [choppiness]\n"
+            f"velocity    : {velocity:0.3f}  [speed]\n"
+            f"quality     : {quality:0.3f}  [confidence]"
         )
 
     def _build_info_panel(self, params: dict[str, float]) -> str:
@@ -472,7 +472,7 @@ class VisualEngine:
             noise = float(np.clip(noise + 0.15 * flash_t, 0.0, 1.0))
             self._flash_frames -= 1
 
-        # Spiral flow with tighter constraints: stronger centripetal + angular velocity
+        # Spiral flow with loostened constraints for smoother drift
         radial_norm = np.clip(radius / 1.25, 0.0, 1.0)
         omega = (0.0088 + 0.0495 * motion) * (1.25 - 0.50 * radial_norm)
         arm_phase = 0.28 * np.sin(self.arm_count * theta - 0.035 * self.frame_idx)
@@ -484,7 +484,7 @@ class VisualEngine:
         radius_next = np.clip(radius - inward * radial_norm + breathing + radial_noise, 0.04, 1.22)
 
         next_pos = np.column_stack([radius_next * np.cos(theta_next), radius_next * np.sin(theta_next)]).astype(np.float32)
-        # Reduced feedback weight = more constrained to spiral path
+        # Reverted: tighter spiral constraint
         self.velocities = 0.78 * self.velocities + 0.22 * (next_pos - self.positions)
         self.positions = next_pos
 
