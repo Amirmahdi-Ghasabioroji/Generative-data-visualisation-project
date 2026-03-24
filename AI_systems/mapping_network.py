@@ -10,8 +10,9 @@ import tensorflow as tf
 import argparse
 import json
 from pathlib import Path
-from tensorflow import keras
-from tensorflow.keras import layers
+
+keras = tf.keras
+layers = tf.keras.layers
 
 
 def _to_unit(arr: np.ndarray, low_q: float = 5.0, high_q: float = 95.0) -> np.ndarray:
@@ -111,20 +112,36 @@ class MappingNetwork(keras.Model):
         self.latent_dim = latent_dim
         self.theta_dim = theta_dim
 
-        self.dense1 = layers.Dense(64, activation="relu", name="hidden_1")
-        self.dense2 = layers.Dense(32, activation="relu", name="hidden_2")
+        self.input_proj = layers.Dense(64, activation=None, name="input_proj")
+        self.dense1 = layers.Dense(128, activation="swish", name="hidden_1")
+        self.norm1 = layers.LayerNormalization(name="ln_1")
+        self.drop1 = layers.Dropout(0.12, name="drop_1")
+        self.dense2 = layers.Dense(64, activation="swish", name="hidden_2")
+        self.norm2 = layers.LayerNormalization(name="ln_2")
+        self.drop2 = layers.Dropout(0.10, name="drop_2")
+        self.dense3 = layers.Dense(32, activation="swish", name="hidden_3")
         self.output_layer = layers.Dense(theta_dim, activation="sigmoid", name="output")
 
         self.loss_tracker = keras.metrics.Mean(name="loss")
+        self.mse_tracker = keras.metrics.Mean(name="mse")
+        self.mae_tracker = keras.metrics.Mean(name="mae")
 
     def call(self, inputs, training=False):
+        skip = self.input_proj(inputs)
         x = self.dense1(inputs)
+        x = self.norm1(x)
+        x = self.drop1(x, training=training)
         x = self.dense2(x)
+        x = self.norm2(x)
+        x = self.drop2(x, training=training)
+        # Light residual blend improves gradient flow for small datasets.
+        x = 0.75 * x + 0.25 * skip
+        x = self.dense3(x)
         return self.output_layer(x)
 
     @property
     def metrics(self):
-        return [self.loss_tracker]
+        return [self.loss_tracker, self.mse_tracker, self.mae_tracker]
 
     def train_step(self, data):
         z, theta_target = data
@@ -133,24 +150,56 @@ class MappingNetwork(keras.Model):
 
         with tf.GradientTape() as tape:
             theta_pred = self(z, training=True)
-            loss = tf.reduce_mean(tf.keras.losses.mse(theta_target, theta_pred))
+            mse = tf.reduce_mean(tf.keras.losses.mse(theta_target, theta_pred))
+            mae = tf.reduce_mean(tf.keras.losses.mae(theta_target, theta_pred))
+            loss = 0.80 * mse + 0.20 * mae
 
         gradients = tape.gradient(loss, self.trainable_variables)
         self.optimizer.apply_gradients(zip(gradients, self.trainable_variables))
 
         self.loss_tracker.update_state(loss)
-        return {"loss": self.loss_tracker.result()}
+        self.mse_tracker.update_state(mse)
+        self.mae_tracker.update_state(mae)
+        return {
+            "loss": self.loss_tracker.result(),
+            "mse": self.mse_tracker.result(),
+            "mae": self.mae_tracker.result(),
+        }
 
     def fit(self, Z, theta_targets, epochs=50, batch_size=32, learning_rate=1e-3):
         Z = tf.convert_to_tensor(Z, dtype=tf.float32)
         theta_targets = tf.convert_to_tensor(theta_targets, dtype=tf.float32)
-        super().compile(optimizer=tf.keras.optimizers.Adam(learning_rate=learning_rate))
+        super().compile(
+            optimizer=tf.keras.optimizers.Adam(
+                learning_rate=learning_rate,
+                amsgrad=True,
+                clipnorm=1.0,
+            )
+        )
+        callbacks = [
+            keras.callbacks.ReduceLROnPlateau(
+                monitor="loss",
+                factor=0.5,
+                patience=4,
+                min_lr=1e-5,
+                verbose=1,
+            ),
+            keras.callbacks.EarlyStopping(
+                monitor="loss",
+                patience=10,
+                min_delta=1e-5,
+                restore_best_weights=True,
+                verbose=1,
+            ),
+        ]
         super().fit(
             x=Z,
             y=theta_targets,
             epochs=epochs,
             batch_size=batch_size,
             shuffle=True,
+            callbacks=callbacks,
+            verbose=1,
         )
         print(f"[✓] Mapping network trained for {epochs} epochs")
 

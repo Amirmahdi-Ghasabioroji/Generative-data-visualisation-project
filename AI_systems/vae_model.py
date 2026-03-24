@@ -87,6 +87,8 @@ class VAE(keras.Model):
         cross_dim:    int   = 3,
         latent_dim:   int   = 16,
         dropout_rate: float = 0.1,
+        kl_anneal_steps: int = 2000,
+        beta_start_ratio: float = 0.15,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -97,12 +99,16 @@ class VAE(keras.Model):
         self.input_dim    = market_dim + social_dim + cross_dim
         self.latent_dim   = latent_dim
         self.dropout_rate = dropout_rate
+        self.kl_anneal_steps = int(max(1, kl_anneal_steps))
+        self.beta_start_ratio = float(np.clip(beta_start_ratio, 0.0, 1.0))
 
         # β scales KL loss so its magnitude matches reconstruction loss.
         # Reconstruction sums over input_dim dims, KL over latent_dim dims —
         # without β the KL term is ~input_dim/latent_dim times too small,
         # causing posterior collapse (encoder ignores the prior).
         self.beta = self.input_dim / self.latent_dim
+        self.beta_start = self.beta * self.beta_start_ratio
+        self.train_step_counter = tf.Variable(0, trainable=False, dtype=tf.int64)
 
         self.sampling = Sampling()
         self.encoder  = self._build_encoder()
@@ -111,6 +117,7 @@ class VAE(keras.Model):
         self.total_loss_tracker          = keras.metrics.Mean(name="loss")
         self.reconstruction_loss_tracker = keras.metrics.Mean(name="reconstruction_loss")
         self.kl_loss_tracker             = keras.metrics.Mean(name="kl_loss")
+        self.beta_tracker                = keras.metrics.Mean(name="beta")
 
     # ─────────────────────────────────────────────────────────────────────────
     # ENCODER
@@ -150,7 +157,9 @@ class VAE(keras.Model):
 
         # ── Merge: Concat(32+32+16=80) → Dense(64) → Dropout ──
         merged = layers.Concatenate(name="modality_merge")([m, s, c])
-        merged = layers.Dense(64, activation="relu", name="merge_dense")(merged)
+        merged = layers.Dense(96, activation="relu", name="merge_dense_1")(merged)
+        merged = layers.BatchNormalization(name="merge_bn_1")(merged)
+        merged = layers.Dense(64, activation="relu", name="merge_dense_2")(merged)
         merged = layers.Dropout(self.dropout_rate, name="merge_dropout")(merged)
 
         # ── Latent distribution heads ──
@@ -169,7 +178,7 @@ class VAE(keras.Model):
     def _build_decoder(self) -> keras.Model:
         z_input = keras.Input(shape=(self.latent_dim,), name="decoder_input")
 
-        x = layers.Dense(64, activation="relu", name="dec_dense_1")(z_input)
+        x = layers.Dense(96, activation="relu", name="dec_dense_1")(z_input)
         x = layers.BatchNormalization(name="dec_bn_1")(x)
         x = layers.Dense(80, activation="relu", name="dec_dense_2")(x)
         x = layers.BatchNormalization(name="dec_bn_2")(x)
@@ -199,6 +208,8 @@ class VAE(keras.Model):
         if isinstance(data, tuple):
             data = data[0]
 
+        data = tf.cast(data, tf.float32)
+
         with tf.GradientTape() as tape:
             z_mean, z_log_var = self.encoder(data)
             # Clip log-variance to prevent exp() overflow
@@ -206,11 +217,9 @@ class VAE(keras.Model):
             z = self.sampling([z_mean, z_log_var])
             reconstruction = self.decoder(z)
 
-            reconstruction_loss = tf.reduce_mean(
-                tf.reduce_sum(
-                    tf.square(data - reconstruction), axis=1
-                )
-            )
+            recon_sq = tf.reduce_sum(tf.square(data - reconstruction), axis=1)
+            recon_l1 = tf.reduce_sum(tf.abs(data - reconstruction), axis=1)
+            reconstruction_loss = tf.reduce_mean(0.80 * recon_sq + 0.20 * recon_l1)
 
             kl_loss = -0.5 * tf.reduce_mean(
                 tf.reduce_sum(
@@ -218,8 +227,11 @@ class VAE(keras.Model):
                 )
             )
 
-            # β-weighted total loss — keeps both terms in the same magnitude range
-            total_loss = reconstruction_loss + self.beta * kl_loss
+            # Linear KL warmup prevents posterior collapse early in training.
+            step_f = tf.cast(self.train_step_counter, tf.float32)
+            warmup = tf.clip_by_value(step_f / float(self.kl_anneal_steps), 0.0, 1.0)
+            beta_t = self.beta_start + warmup * (self.beta - self.beta_start)
+            total_loss = reconstruction_loss + beta_t * kl_loss
 
         grads = tape.gradient(total_loss, self.trainable_weights)
         self.optimizer.apply_gradients(zip(grads, self.trainable_weights))
@@ -227,11 +239,14 @@ class VAE(keras.Model):
         self.total_loss_tracker.update_state(total_loss)
         self.reconstruction_loss_tracker.update_state(reconstruction_loss)
         self.kl_loss_tracker.update_state(kl_loss)
+        self.beta_tracker.update_state(beta_t)
+        self.train_step_counter.assign_add(1)
 
         return {
             "loss":                self.total_loss_tracker.result(),
             "reconstruction_loss": self.reconstruction_loss_tracker.result(),
             "kl_loss":             self.kl_loss_tracker.result(),
+            "beta":               self.beta_tracker.result(),
         }
 
     # Keras uses this to reset metric trackers at the start of each epoch
@@ -241,6 +256,7 @@ class VAE(keras.Model):
             self.total_loss_tracker,
             self.reconstruction_loss_tracker,
             self.kl_loss_tracker,
+            self.beta_tracker,
         ]
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -259,9 +275,24 @@ class VAE(keras.Model):
         epochs     : training epochs (default 100)
         batch_size : samples per gradient step (default 64)
         """
-        X = tf.cast(X, tf.float32)
-        self.compile(optimizer=keras.optimizers.Adam(learning_rate=1e-3))
-        super().fit(X, epochs=epochs, batch_size=batch_size, shuffle=True)
+        X = np.asarray(X, dtype=np.float32)
+        self.compile(
+            optimizer=keras.optimizers.Adam(
+                learning_rate=1e-3,
+                amsgrad=True,
+                clipnorm=1.0,
+            )
+        )
+        callbacks = [
+            keras.callbacks.ReduceLROnPlateau(
+                monitor="loss",
+                factor=0.5,
+                patience=4,
+                min_lr=1e-5,
+                verbose=1,
+            ),
+        ]
+        super().fit(X, epochs=epochs, batch_size=batch_size, shuffle=True, callbacks=callbacks, verbose=1)
         print("[✓] VAE training complete")
 
     # ─────────────────────────────────────────────────────────────────────────

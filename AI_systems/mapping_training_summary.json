@@ -14,7 +14,7 @@
     "epochs": 30,
     "batch_size": 128,
     "learning_rate": 0.001,
-    "train_mse": 0.010309167206287384
+    "train_mse": 0.0091176712885499
   },
   "artifacts": {
     "weights": "AI_systems/mapping_network.weights.h5",
