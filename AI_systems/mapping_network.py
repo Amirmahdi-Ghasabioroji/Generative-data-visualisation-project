@@ -252,15 +252,15 @@ class MappingNetwork(keras.Model):
 
 
 def train_from_artifacts(
-    latent_path: str = "AI_systems/latent_vectors.npy",
+    latent_path: str = "AI_systems/vae_artifacts/latent_vectors.npy",
     features_dir: str = "vae_model/data",
     epochs: int = 30,
     batch_size: int = 128,
     learning_rate: float = 1e-3,
-    weights_out: str = "AI_systems/mapping_network.weights.h5",
-    theta_targets_out: str = "AI_systems/theta_targets.npy",
-    theta_pred_out: str = "AI_systems/theta_pred.npy",
-    summary_out: str = "AI_systems/mapping_training_summary.json",
+    weights_out: str = "AI_systems/mapping_network_artifacts/mapping_network.weights.h5",
+    theta_targets_out: str = "AI_systems/mapping_network_artifacts/theta_targets.npy",
+    theta_pred_out: str = "AI_systems/mapping_network_artifacts/theta_pred.npy",
+    summary_out: str = "AI_systems/mapping_network_artifacts/mapping_training_summary.json",
 ) -> dict:
     """
     Train mapping network from real artifacts exported by previous pipeline stages.
@@ -362,15 +362,15 @@ if __name__ == "__main__":
     np.random.seed(42)
 
     parser = argparse.ArgumentParser(description="Train mapping network on real VAE + feature artifacts.")
-    parser.add_argument("--latent-path", default="AI_systems/latent_vectors.npy", help="Path to latent vectors .npy")
+    parser.add_argument("--latent-path", default="AI_systems/vae_artifacts/latent_vectors.npy", help="Path to latent vectors .npy")
     parser.add_argument("--features-dir", default="vae_model/data", help="Directory containing market/social/cross feature .npy files")
     parser.add_argument("--epochs", type=int, default=30, help="Training epochs")
     parser.add_argument("--batch-size", type=int, default=128, help="Training batch size")
     parser.add_argument("--learning-rate", type=float, default=1e-3, help="Adam learning rate")
-    parser.add_argument("--weights-out", default="AI_systems/mapping_network.weights.h5", help="Output mapping weights path")
-    parser.add_argument("--theta-targets-out", default="AI_systems/theta_targets.npy", help="Output theta targets path")
-    parser.add_argument("--theta-pred-out", default="AI_systems/theta_pred.npy", help="Output theta predictions path")
-    parser.add_argument("--summary-out", default="AI_systems/mapping_training_summary.json", help="Output training summary path")
+    parser.add_argument("--weights-out", default="AI_systems/mapping_network_artifacts/mapping_network.weights.h5", help="Output mapping weights path")
+    parser.add_argument("--theta-targets-out", default="AI_systems/mapping_network_artifacts/theta_targets.npy", help="Output theta targets path")
+    parser.add_argument("--theta-pred-out", default="AI_systems/mapping_network_artifacts/theta_pred.npy", help="Output theta predictions path")
+    parser.add_argument("--summary-out", default="AI_systems/mapping_network_artifacts/mapping_training_summary.json", help="Output training summary path")
     parser.add_argument("--smoke", action="store_true", help="Run synthetic smoke test instead of real training")
     args = parser.parse_args()
 

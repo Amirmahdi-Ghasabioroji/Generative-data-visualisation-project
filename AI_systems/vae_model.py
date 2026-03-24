@@ -319,7 +319,7 @@ class VAE(keras.Model):
     # SAVE / LOAD WEIGHTS
     # ─────────────────────────────────────────────────────────────────────────
     def save_weights(self, filepath: str):
-        """Save trained weights.  e.g. vae.save_weights('AI_systems/vae_weights')"""
+        """Save trained weights.  e.g. vae.save_weights('AI_systems/vae_artifacts/vae_weights.weights.h5')"""
         # Custom train_step uses encoder/decoder directly, so build the outer
         # model graph explicitly before saving to satisfy Keras checks.
         dummy = tf.zeros((1, self.input_dim))
@@ -328,7 +328,7 @@ class VAE(keras.Model):
         print(f"[✓] VAE weights saved → {filepath}")
 
     def load_weights(self, filepath: str):
-        """Load previously saved weights.  e.g. vae.load_weights('AI_systems/vae_weights')"""
+        """Load previously saved weights.  e.g. vae.load_weights('AI_systems/vae_artifacts/vae_weights.weights.h5')"""
         # Dummy forward pass builds the computation graph before weight loading
         dummy = tf.zeros((1, self.input_dim))
         self(dummy)
@@ -410,9 +410,9 @@ def train_from_feature_artifacts(
     epochs: int = 30,
     batch_size: int = 128,
     latent_dim: int = 16,
-    weights_out: str = "AI_systems/vae_weights.weights.h5",
-    latent_out: str = "AI_systems/latent_vectors.npy",
-    summary_out: str = "AI_systems/vae_training_summary.json",
+    weights_out: str = "AI_systems/vae_artifacts/vae_weights.weights.h5",
+    latent_out: str = "AI_systems/vae_artifacts/latent_vectors.npy",
+    summary_out: str = "AI_systems/vae_artifacts/vae_training_summary.json",
 ) -> dict:
     """Train VAE from exported feature artifacts and save model outputs."""
     X = load_feature_matrix_with_context(data_dir=data_dir, context_window=context_window)
@@ -501,9 +501,9 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", type=int, default=30, help="Training epochs")
     parser.add_argument("--batch-size", type=int, default=128, help="Training batch size")
     parser.add_argument("--latent-dim", type=int, default=16, help="Latent dimension")
-    parser.add_argument("--weights-out", default="AI_systems/vae_weights.weights.h5", help="Output VAE weights path")
-    parser.add_argument("--latent-out", default="AI_systems/latent_vectors.npy", help="Output latent vectors path")
-    parser.add_argument("--summary-out", default="AI_systems/vae_training_summary.json", help="Output training summary path")
+    parser.add_argument("--weights-out", default="AI_systems/vae_artifacts/vae_weights.weights.h5", help="Output VAE weights path")
+    parser.add_argument("--latent-out", default="AI_systems/vae_artifacts/latent_vectors.npy", help="Output latent vectors path")
+    parser.add_argument("--summary-out", default="AI_systems/vae_artifacts/vae_training_summary.json", help="Output training summary path")
     parser.add_argument("--smoke", action="store_true", help="Run synthetic smoke test instead of real training")
     args = parser.parse_args()
 

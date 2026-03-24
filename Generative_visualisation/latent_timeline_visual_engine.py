@@ -7,8 +7,8 @@ Designed for historical playback with a slider over dataset time (Mar 2023-Dec 2
 Usage examples:
   python Generative_visualisation/latent_timeline_visual_engine.py
   python Generative_visualisation/latent_timeline_visual_engine.py \
-      --latent AI_systems/latent_vectors.npy \
-      --theta AI_systems/theta_pred.npy \
+    --latent AI_systems/vae_artifacts/latent_vectors.npy \
+    --theta AI_systems/mapping_network_artifacts/theta_pred.npy \
       --timestamps vae_model/data_full_2023_2025_check/timestamps.npy
 
 Controls:
@@ -667,12 +667,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Interactive latent timeline visual engine")
     parser.add_argument(
         "--latent",
-        default="AI_systems/latent_vectors.npy",
+        default="AI_systems/vae_artifacts/latent_vectors.npy",
         help="Path to latent vectors .npy",
     )
     parser.add_argument(
         "--theta",
-        default="AI_systems/theta_pred.npy",
+        default="AI_systems/mapping_network_artifacts/theta_pred.npy",
         help="Path to theta predictions .npy (optional; fallback generated if missing)",
     )
     parser.add_argument(
