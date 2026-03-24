@@ -1,0 +1,24 @@
+{
+  "latent_path": "AI_systems/latent_vectors.npy",
+  "features_dir": "vae_model/data",
+  "rows_used": 49678,
+  "latent_shape": [
+    49678,
+    16
+  ],
+  "theta_shape": [
+    49678,
+    5
+  ],
+  "training": {
+    "epochs": 30,
+    "batch_size": 128,
+    "learning_rate": 0.001,
+    "train_mse": 0.010309167206287384
+  },
+  "artifacts": {
+    "weights": "AI_systems/mapping_network.weights.h5",
+    "theta_targets": "AI_systems/theta_targets.npy",
+    "theta_pred": "AI_systems/theta_pred.npy"
+  }
+}
