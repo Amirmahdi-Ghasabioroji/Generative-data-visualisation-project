@@ -174,8 +174,13 @@ class TimelineVisualEngine:
         self.scatter = None
         self.glow_patches = []
         self.hud_text = None
+        self.theta_axes = []
+        self.theta_lines = []
+        self.theta_markers = []
+        self.theta_explainer_ax = None
 
         self.fear_greed_series = self._build_fear_greed_series()
+        self.month_theta = self.data.theta[self.month_to_index, :5].astype(np.float32)
 
         self.fg_cmap = LinearSegmentedColormap.from_list(
             "fear_greed",
@@ -252,14 +257,17 @@ class TimelineVisualEngine:
         self.fig = plt.figure(figsize=(15.5, 9.2), facecolor="#02030a")
         gs = self.fig.add_gridspec(
             nrows=1,
-            ncols=1,
+            ncols=2,
+            width_ratios=[4.65, 1.55],
             left=0.04,
             right=0.985,
             top=0.95,
             bottom=0.12,
+            wspace=0.06,
         )
 
         self.ax_main = self.fig.add_subplot(gs[0, 0])
+        theta_gs = gs[0, 1].subgridspec(6, 1, height_ratios=[1, 1, 1, 1, 1, 0.9], hspace=0.17)
 
         self.ax_slider = self.fig.add_axes([0.08, 0.045, 0.74, 0.032], facecolor="#101935")
         self.ax_button = self.fig.add_axes([0.835, 0.038, 0.13, 0.045])
@@ -349,6 +357,88 @@ class TimelineVisualEngine:
             zorder=10,
         )
 
+        # Theta panels: show each signal over month-index time with a live cursor marker.
+        theta_titles = [
+            "θ0 Turbulence",
+            "θ1 Trend Bias",
+            "θ2 Distortion",
+            "θ3 Fragmentation",
+            "θ4 Velocity",
+        ]
+        theta_desc = [
+            "market agitation / volatility",
+            "directional market pressure",
+            "regime-shape irregularity",
+            "cohesion vs sparse breakup",
+            "pace of latent-state change",
+        ]
+        x_month = np.arange(self.n_months, dtype=np.float32)
+
+        self.theta_axes = []
+        self.theta_lines = []
+        self.theta_markers = []
+
+        for i in range(5):
+            ax = self.fig.add_subplot(theta_gs[i, 0])
+            ax.set_facecolor("#070d1d")
+            for s in ax.spines.values():
+                s.set_color("#314a77")
+
+            y = self.month_theta[:, i] if self.n_months > 0 else np.zeros(1, dtype=np.float32)
+            line, = ax.plot(x_month, y, color="#7fd1ff", lw=1.25, alpha=0.95)
+            marker, = ax.plot([0.0], [float(y[0]) if len(y) else 0.0], marker="o", ms=5.0, color="#ffd27c", lw=0)
+
+            ax.set_xlim(0, max(1, self.n_months - 1))
+            ax.set_ylim(-0.02, 1.02)
+            ax.grid(alpha=0.18, color="#7ca0d4", linewidth=0.55)
+            ax.set_yticks([0.0, 0.5, 1.0])
+            ax.tick_params(axis="y", colors="#a9c3e8", labelsize=7)
+            ax.tick_params(axis="x", colors="#8fb2df", labelsize=7)
+            ax.set_ylabel(f"θ{i}", color="#b9cff0", fontsize=7, labelpad=2)
+            ax.set_title(f"{theta_titles[i]}  -  {theta_desc[i]}", color="#dbe9ff", fontsize=8, loc="left", pad=2)
+
+            if i < 4:
+                ax.set_xticklabels([])
+            else:
+                ax.set_xlabel("Month Index", color="#9cb9e0", fontsize=8)
+
+            self.theta_axes.append(ax)
+            self.theta_lines.append(line)
+            self.theta_markers.append(marker)
+
+        self.theta_explainer_ax = self.fig.add_subplot(theta_gs[5, 0])
+        self.theta_explainer_ax.set_facecolor("#060c1a")
+        self.theta_explainer_ax.set_xticks([])
+        self.theta_explainer_ax.set_yticks([])
+        for s in self.theta_explainer_ax.spines.values():
+            s.set_color("#314a77")
+        self.theta_explainer_ax.text(
+            0.02,
+            0.92,
+            "Theta Meanings (normalized 0-1)",
+            transform=self.theta_explainer_ax.transAxes,
+            va="top",
+            ha="left",
+            color="#e7f0ff",
+            fontsize=8.5,
+            fontweight="bold",
+        )
+        self.theta_explainer_ax.text(
+            0.02,
+            0.74,
+            "θ0 Turbulence: calm -> choppy\n"
+            "θ1 Trend Bias: bearish -> bullish\n"
+            "θ2 Distortion: pattern regularity -> regime-shift irregularity\n"
+            "θ3 Fragmentation: cohesive structure -> broken/scattered structure\n"
+            "θ4 Velocity: slow evolution -> fast latent-state change",
+            transform=self.theta_explainer_ax.transAxes,
+            va="top",
+            ha="left",
+            color="#b7cdef",
+            fontsize=8,
+            linespacing=1.35,
+        )
+
     def _state_at_month(self, month_float: float) -> tuple[np.ndarray, np.ndarray, float, np.ndarray]:
         month_float = float(np.clip(month_float, 0.0, self.n_months - 1))
         m0 = int(np.floor(month_float))
@@ -393,6 +483,7 @@ class TimelineVisualEngine:
 
         turbulence = float(t[0])
         distortion = float(t[2])
+        fragmentation = float(t[3])
         speed = float(t[4])
 
         p = self.base_positions.copy()
@@ -408,7 +499,8 @@ class TimelineVisualEngine:
         # Direct angular term ensures clear one-direction rotation over time.
         angular_velocity = 0.144 + 0.3456 * speed + 0.1152 * distortion
         # Static radial warp keeps texture without introducing directional wobble.
-        spiral_theta = angle + twist * radius + angular_velocity * phase + 0.05 * np.sin(2.0 * radius)
+        distortion_warp = 0.238 * distortion * np.sin(3.0 * angle + 0.75 * phase)
+        spiral_theta = angle + twist * radius + angular_velocity * phase + 0.05 * np.sin(2.0 * radius) + distortion_warp
         breathing = 1.0 + 0.02 * np.sin(phase + 1.1 * radius)
 
         swirl_x = breathing * radius * np.cos(spiral_theta)
@@ -434,17 +526,31 @@ class TimelineVisualEngine:
         radius_keep = np.linalg.norm(p, axis=1)
         depth_keep = np.clip(radius_keep / 3.2, 0.0, 1.0)
 
+        # Higher fragmentation visibly breaks the field apart by pushing points outward.
+        unit_vec = p / np.clip(radius_keep.reshape(-1, 1), 1e-6, None)
+        frag_push = (fragmentation ** 1.15) * (0.07 + 0.294 * depth_keep)
+        p += unit_vec * frag_push.reshape(-1, 1)
+        p[:, 0] = 3.05 * np.tanh(p[:, 0] / 2.25)
+        p[:, 1] = 3.05 * np.tanh(p[:, 1] / 2.25)
+        radius_keep = np.linalg.norm(p, axis=1)
+        depth_keep = np.clip(radius_keep / 3.2, 0.0, 1.0)
+
         # Color from radial field + latent/color axis influence.
         color_field = 0.68 * fear_greed + 0.32 * np.clip(1.0 - depth_keep + 0.18 * np.sin(phase + 3.5 * depth_keep), 0.0, 1.0)
         color_field = np.clip(color_field, 0.0, 1.0)
 
         # Point sizes from speed+turbulence.
         size_base = 6.0 + 9.0 * speed + 4.5 * turbulence
-        sizes = np.clip(size_base * (0.62 + 1.15 * (1.0 - depth_keep)), 4.0, 30.0)
+        frag_size_scale = 1.0 - 0.294 * (fragmentation ** 1.05)
+        sizes = np.clip(size_base * (0.62 + 1.15 * (1.0 - depth_keep)) * frag_size_scale, 3.0, 30.0)
 
         colors = self.fg_cmap(color_field)
-        colors[:, :3] = np.clip(np.power(colors[:, :3], 0.85) * 1.14, 0.0, 1.0)
-        colors[:, 3] = np.clip(0.30 + 0.62 * (1.0 - depth_keep), 0.22, 0.96)
+        rgb = np.clip(np.power(colors[:, :3], 0.85) * 1.14, 0.0, 1.0)
+        luminance = np.sum(rgb * np.array([0.2126, 0.7152, 0.0722], dtype=np.float32), axis=1, keepdims=True)
+        saturation_boost = 1.25
+        colors[:, :3] = np.clip(luminance + (rgb - luminance) * saturation_boost, 0.0, 1.0)
+        frag_alpha_scale = 1.0 - 0.336 * (fragmentation ** 1.1)
+        colors[:, 3] = np.clip((0.30 + 0.62 * (1.0 - depth_keep)) * frag_alpha_scale, 0.12, 0.96)
 
         return p, sizes, colors
 
@@ -461,6 +567,12 @@ class TimelineVisualEngine:
         self.scatter.set_offsets(p)
         self.scatter.set_sizes(sizes)
         self.scatter.set_facecolors(colors)
+
+        # Keep theta cursor markers synced to current interpolated month and theta state.
+        _z_cur, t_cur, _fg_cur, _idx_cur = self._state_at_month(month_float)
+        if self.theta_markers:
+            for i, marker in enumerate(self.theta_markers):
+                marker.set_data([month_float], [float(np.clip(t_cur[i], 0.0, 1.0))])
 
         # Keep slider position in sync with autoplay/keyboard-driven animation.
         if self.slider is not None and abs(float(self.slider.val) - month_float) > 1e-6:
