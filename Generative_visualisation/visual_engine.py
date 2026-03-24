@@ -22,7 +22,7 @@ class VisualEngine:
     def __init__(self, width: int = 8, height: int = 8, base_particles: int = 120):
         self.width = width
         self.height = height
-        self.base_particles = 68
+        self.base_particles = 185
 
         self.fig = None
         self.ax = None
@@ -44,8 +44,8 @@ class VisualEngine:
         self.glow_patch = None         # soft central glow
 
         self.frame_idx = 0
-        self.smoothing_alpha = 0.17
-        self.tick_interval_ms = 20
+        self.smoothing_alpha = 0.10
+        self.tick_interval_ms = 18
         self.current_params = {
             "motion_intensity": 0.5,
             "particle_density": 0.5,
@@ -148,11 +148,11 @@ class VisualEngine:
 
         self.heatmap_ax = self.fig.add_axes([0.69, 0.09, 0.27, 0.05])
         gradient = np.linspace(0, 1, 256, dtype=np.float32).reshape(1, -1)
-        self.heatmap_ax.imshow(gradient, aspect="auto", cmap="plasma", extent=[0, 1, 0, 1])
+        self.heatmap_ax.imshow(gradient, aspect="auto", cmap="RdYlBu", extent=[0, 1, 0, 1])
         self.heatmap_ax.set_yticks([])
         self.heatmap_ax.set_xticks([0.0, 0.5, 1.0])
-        self.heatmap_ax.set_xticklabels(["cool", "mid", "warm"], color="white", fontsize=8)
-        self.heatmap_ax.set_title("Particle colour heatmap (plasma)", color="white", fontsize=8, pad=2)
+        self.heatmap_ax.set_xticklabels(["bearish (cold)", "neutral", "bullish (warm)"], color="white", fontsize=8)
+        self.heatmap_ax.set_title("Particle colour heatmap (RdYlBu)", color="white", fontsize=8, pad=2)
         self.heatmap_ax.set_facecolor("#0b1220")
         for spine in self.heatmap_ax.spines.values():
             spine.set_edgecolor("#334155")
@@ -310,26 +310,42 @@ class VisualEngine:
 
         # Each particle gets a fixed phase seed so colour ripples across the cloud
         self.phase_offsets = np.random.uniform(0.0, 1.0, size=n_particles).astype(np.float32)
-        self.colors = cm.twilight(np.linspace(0, 1, n_particles))
+        self.colors = cm.RdYlBu(np.linspace(0, 1, n_particles))
 
     def _sample_galaxy_positions(self, n_particles: int) -> np.ndarray:
         if n_particles <= 0:
             return np.empty((0, 2), dtype=np.float32)
 
-        arm_idx = np.random.randint(0, self.arm_count, size=n_particles)
-        base_theta = (2 * np.pi / self.arm_count) * arm_idx
+        # 40% spiral arms + 60% uniform disk fill for broader coverage
+        n_spiral = int(0.40 * n_particles)
+        n_disk = n_particles - n_spiral
 
-        radius = np.random.beta(1.1, 2.6, size=n_particles) * 1.20
-        theta = base_theta + radius * self.arm_twist + np.random.normal(0.0, 0.09, size=n_particles)
+        # Spiral arm particles
+        if n_spiral > 0:
+            arm_idx = np.random.randint(0, self.arm_count, size=n_spiral)
+            base_theta_spiral = (2 * np.pi / self.arm_count) * arm_idx
+            radius_spiral = np.random.beta(1.1, 2.6, size=n_spiral) * 1.20
+            theta_spiral = base_theta_spiral + radius_spiral * self.arm_twist + np.random.normal(0.0, 0.09, size=n_spiral)
+            x_spiral = radius_spiral * np.cos(theta_spiral)
+            y_spiral = radius_spiral * np.sin(theta_spiral)
 
-        x = radius * np.cos(theta)
-        y = radius * np.sin(theta)
+        # Uniform disk particles
+        if n_disk > 0:
+            theta_disk = np.random.uniform(0.0, 2 * np.pi, size=n_disk)
+            radius_disk = np.sqrt(np.random.uniform(0.0, 1.0, size=n_disk)) * 1.20
+            x_disk = radius_disk * np.cos(theta_disk)
+            y_disk = radius_disk * np.sin(theta_disk)
 
-        core_n = min(n_particles, max(6, int(0.12 * n_particles)))
-        core_radius = np.random.beta(1.0, 6.0, size=core_n) * 0.22
-        core_theta = np.random.uniform(0.0, 2 * np.pi, size=core_n)
-        x[:core_n] = core_radius * np.cos(core_theta)
-        y[:core_n] = core_radius * np.sin(core_theta)
+        # Combine
+        if n_spiral > 0 and n_disk > 0:
+            x = np.concatenate([x_spiral, x_disk])
+            y = np.concatenate([y_spiral, y_disk])
+        elif n_spiral > 0:
+            x = x_spiral
+            y = y_spiral
+        else:
+            x = x_disk
+            y = y_disk
 
         return np.column_stack([x, y]).astype(np.float32)
 
@@ -440,7 +456,7 @@ class VisualEngine:
         noise = self.current_params["noise_scale"]
         color_dyn = self.current_params["color_dynamics"]
 
-        n_particles = int(self.base_particles + density * 280)
+        n_particles = int(self.base_particles + density * 440)
         self._resize_particles(n_particles)
 
         center = self.positions.copy()
@@ -456,19 +472,20 @@ class VisualEngine:
             noise = float(np.clip(noise + 0.15 * flash_t, 0.0, 1.0))
             self._flash_frames -= 1
 
-        # Spiral flow in polar coordinates gives a continuous galaxy-like curl.
+        # Spiral flow with tighter constraints: stronger centripetal + angular velocity
         radial_norm = np.clip(radius / 1.25, 0.0, 1.0)
-        omega = (0.010 + 0.052 * motion) * (1.25 - 0.55 * radial_norm)
-        arm_phase = 0.35 * np.sin(self.arm_count * theta - 0.035 * self.frame_idx)
-        theta_next = theta + omega + 0.020 * distortion * arm_phase
+        omega = (0.0088 + 0.0495 * motion) * (1.25 - 0.50 * radial_norm)
+        arm_phase = 0.28 * np.sin(self.arm_count * theta - 0.035 * self.frame_idx)
+        theta_next = theta + omega + 0.0165 * distortion * arm_phase
 
-        inward = 0.00055 + 0.0028 * distortion
-        breathing = 0.00035 * np.sin(0.028 * self.frame_idx + 4.0 * theta)
-        radial_noise = np.random.normal(0.0, 0.00025 + 0.0009 * noise, size=radius.shape)
+        inward = 0.00039 + 0.0022 * distortion
+        breathing = 0.00040 * np.sin(0.022 * self.frame_idx + 3.5 * theta)
+        radial_noise = np.random.normal(0.0, 0.00035 + 0.0012 * noise, size=radius.shape)
         radius_next = np.clip(radius - inward * radial_norm + breathing + radial_noise, 0.04, 1.22)
 
         next_pos = np.column_stack([radius_next * np.cos(theta_next), radius_next * np.sin(theta_next)]).astype(np.float32)
-        self.velocities = 0.82 * self.velocities + 0.18 * (next_pos - self.positions)
+        # Reduced feedback weight = more constrained to spiral path
+        self.velocities = 0.78 * self.velocities + 0.22 * (next_pos - self.positions)
         self.positions = next_pos
 
         radius = np.linalg.norm(self.positions, axis=1)
@@ -482,7 +499,7 @@ class VisualEngine:
         # Per-particle phase offset makes colour ripple across cloud rather than pulsing in unison
         offsets = self.phase_offsets if self.phase_offsets is not None else 0.0
         phase = (offsets + 0.75 * warm_bias + self.frame_idx * (0.0006 + 0.012 * color_dyn)) % 1.0
-        self.colors = cm.magma(phase)
+        self.colors = cm.RdYlBu(phase)
 
         # Strengthen colour intensity (vivid highlights while preserving palette ordering)
         self.colors[:, :3] = np.clip(self.colors[:, :3] ** 0.82, 0.0, 1.0)
