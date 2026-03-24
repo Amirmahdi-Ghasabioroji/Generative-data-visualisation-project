@@ -22,13 +22,14 @@ class VisualEngine:
     def __init__(self, width: int = 8, height: int = 8, base_particles: int = 120):
         self.width = width
         self.height = height
-        self.base_particles = base_particles
+        self.base_particles = 68
 
         self.fig = None
         self.ax = None
         self.scatter = None
         self.info_text = None
         self.regime_text = None
+        self.market_text = None
         self.interpret_text = None
         self.heatmap_ax = None
         self.heatmap_text = None
@@ -44,7 +45,7 @@ class VisualEngine:
 
         self.frame_idx = 0
         self.smoothing_alpha = 0.17
-        self.tick_interval_ms = 24
+        self.tick_interval_ms = 20
         self.current_params = {
             "motion_intensity": 0.5,
             "particle_density": 0.5,
@@ -55,7 +56,7 @@ class VisualEngine:
         self.latest_model_params = dict(self.current_params)
         self.target_params = dict(self.current_params)
         self.arm_count = 3
-        self.arm_twist = 4.4
+        self.arm_twist = 5.8
         self.current_regime_id: Optional[int] = None
         self.current_regime_confidence = 0.0
         self.current_n_regimes = 0
@@ -63,6 +64,14 @@ class VisualEngine:
             "regime_id": None,
             "confidence": 0.0,
             "n_regimes": 0,
+        }
+        self.latest_market_condition: dict = {
+            "turbulence": 0.5,
+            "trend_bias": 0.5,
+            "distortion": 0.5,
+            "fragmentation": 0.5,
+            "velocity": 0.5,
+            "quality": 0.0,
         }
 
         # Debounce: require N consecutive matching regime IDs before committing
@@ -113,9 +122,21 @@ class VisualEngine:
             bbox={"facecolor": "#1f2937", "alpha": 0.55, "edgecolor": "#334155", "pad": 6},
         )
 
+        self.market_text = self.fig.text(
+            0.69,
+            0.54,
+            self._build_market_panel(),
+            color="white",
+            fontsize=8,
+            va="top",
+            ha="left",
+            family="monospace",
+            bbox={"facecolor": "#111827", "alpha": 0.56, "edgecolor": "#334155", "pad": 6},
+        )
+
         self.interpret_text = self.fig.text(
             0.69,
-            0.42,
+            0.30,
             self._build_interpretation_panel(),
             color="white",
             fontsize=8,
@@ -195,6 +216,25 @@ class VisualEngine:
             f"{regime_text}"
         )
 
+    def _build_market_panel(self) -> str:
+        mc = self.latest_market_condition
+        turbulence = float(np.clip(float(mc.get("turbulence", 0.5)), 0.0, 1.0))
+        trend_bias = float(np.clip(float(mc.get("trend_bias", 0.5)), 0.0, 1.0))
+        distortion = float(np.clip(float(mc.get("distortion", 0.5)), 0.0, 1.0))
+        fragmentation = float(np.clip(float(mc.get("fragmentation", 0.5)), 0.0, 1.0))
+        velocity = float(np.clip(float(mc.get("velocity", 0.5)), 0.0, 1.0))
+        quality = float(np.clip(float(mc.get("quality", 0.0)), 0.0, 1.0))
+
+        return (
+            "Market condition\n"
+            f"turbulence  : {turbulence:0.3f}\n"
+            f"trend bias  : {trend_bias:0.3f}\n"
+            f"distortion  : {distortion:0.3f}\n"
+            f"fragmentation: {fragmentation:0.3f}\n"
+            f"velocity    : {velocity:0.3f}\n"
+            f"quality     : {quality:0.3f}"
+        )
+
     def _build_info_panel(self, params: dict[str, float]) -> str:
         motion = float(params.get("motion_intensity", 0.5))
         density = float(params.get("particle_density", 0.5))
@@ -263,9 +303,9 @@ class VisualEngine:
 
         radius = np.linalg.norm(self.positions, axis=1) + 1e-6
         tangential = np.column_stack([-self.positions[:, 1], self.positions[:, 0]]) / radius[:, None]
-        speed = 0.0012 + 0.0042 * (1.0 - np.clip(radius / 1.25, 0.0, 1.0))
+        speed = 0.0011 + 0.0038 * (1.0 - np.clip(radius / 1.25, 0.0, 1.0))
         vxvy = tangential * speed[:, None]
-        jitter = np.random.normal(0.0, 0.0016, size=(n_particles, 2))
+        jitter = np.random.normal(0.0, 0.0010, size=(n_particles, 2))
         self.velocities = (vxvy + jitter).astype(np.float32)
 
         # Each particle gets a fixed phase seed so colour ripples across the cloud
@@ -279,13 +319,13 @@ class VisualEngine:
         arm_idx = np.random.randint(0, self.arm_count, size=n_particles)
         base_theta = (2 * np.pi / self.arm_count) * arm_idx
 
-        radius = np.random.beta(1.2, 2.8, size=n_particles) * 1.18
-        theta = base_theta + radius * self.arm_twist + np.random.normal(0.0, 0.14, size=n_particles)
+        radius = np.random.beta(1.1, 2.6, size=n_particles) * 1.20
+        theta = base_theta + radius * self.arm_twist + np.random.normal(0.0, 0.09, size=n_particles)
 
         x = radius * np.cos(theta)
         y = radius * np.sin(theta)
 
-        core_n = min(n_particles, max(8, int(0.18 * n_particles)))
+        core_n = min(n_particles, max(6, int(0.12 * n_particles)))
         core_radius = np.random.beta(1.0, 6.0, size=core_n) * 0.22
         core_theta = np.random.uniform(0.0, 2 * np.pi, size=core_n)
         x[:core_n] = core_radius * np.cos(core_theta)
@@ -316,8 +356,8 @@ class VisualEngine:
 
         radius = np.linalg.norm(new_pos, axis=1) + 1e-6
         tangential = np.column_stack([-new_pos[:, 1], new_pos[:, 0]]) / radius[:, None]
-        speed = 0.0012 + 0.0042 * (1.0 - np.clip(radius / 1.25, 0.0, 1.0))
-        new_vel = (tangential * speed[:, None] + np.random.normal(0.0, 0.0016, size=(add, 2))).astype(np.float32)
+        speed = 0.0011 + 0.0038 * (1.0 - np.clip(radius / 1.25, 0.0, 1.0))
+        new_vel = (tangential * speed[:, None] + np.random.normal(0.0, 0.0010, size=(add, 2))).astype(np.float32)
 
         new_colors = cm.twilight(np.random.uniform(0.0, 1.0, size=add))
         new_offsets = np.random.uniform(0.0, 1.0, size=add).astype(np.float32)
@@ -330,7 +370,12 @@ class VisualEngine:
         else:
             self.phase_offsets = new_offsets
 
-    def render(self, params: dict[str, float], regime_info: dict | None = None):
+    def render(
+        self,
+        params: dict[str, float],
+        regime_info: dict | None = None,
+        market_condition: dict | None = None,
+    ):
         self._ensure_plot()
         self.latest_model_params = {
             "motion_intensity": float(params.get("motion_intensity", 0.5)),
@@ -344,6 +389,15 @@ class VisualEngine:
                 "regime_id": regime_info.get("regime_id"),
                 "confidence": float(regime_info.get("confidence", 0.0)),
                 "n_regimes": int(regime_info.get("n_regimes", 0)),
+            }
+        if market_condition is not None:
+            self.latest_market_condition = {
+                "turbulence": float(market_condition.get("turbulence", 0.5)),
+                "trend_bias": float(market_condition.get("trend_bias", 0.5)),
+                "distortion": float(market_condition.get("distortion", 0.5)),
+                "fragmentation": float(market_condition.get("fragmentation", 0.5)),
+                "velocity": float(market_condition.get("velocity", 0.5)),
+                "quality": float(market_condition.get("quality", 0.0)),
             }
         self._apply_regime_style(self.latest_regime_info)
 
@@ -359,6 +413,8 @@ class VisualEngine:
             self.info_text.set_text(self._build_info_panel(self.latest_model_params))
         if self.regime_text is not None:
             self.regime_text.set_text(self._build_regime_panel())
+        if self.market_text is not None:
+            self.market_text.set_text(self._build_market_panel())
 
         if self.fig is not None:
             self.fig.canvas.draw()
@@ -384,17 +440,12 @@ class VisualEngine:
         noise = self.current_params["noise_scale"]
         color_dyn = self.current_params["color_dynamics"]
 
-        n_particles = int(self.base_particles + density * 520)
+        n_particles = int(self.base_particles + density * 280)
         self._resize_particles(n_particles)
-
-        speed = 0.0007 + motion * 0.0052
-        drift_angle = 0.06 * self.frame_idx
-        drift = np.array([np.cos(drift_angle), np.sin(drift_angle)], dtype=np.float32)
 
         center = self.positions.copy()
         radius = np.linalg.norm(center, axis=1) + 1e-6
-        tangential = np.column_stack([-center[:, 1], center[:, 0]]) / radius[:, None]
-        radial_inward = -center / radius[:, None]
+        theta = np.arctan2(center[:, 1], center[:, 0])
 
         # Pulse on regime switch: boost motion, distortion, particle size and brightness
         flash_t = 0.0
@@ -405,30 +456,26 @@ class VisualEngine:
             noise = float(np.clip(noise + 0.15 * flash_t, 0.0, 1.0))
             self._flash_frames -= 1
 
-        swirl_strength = 0.0011 + distortion * 0.007
-        core_pull_strength = 0.0015 + 0.0048 * (1.0 - np.clip(radius / 1.25, 0.0, 1.0))
+        # Spiral flow in polar coordinates gives a continuous galaxy-like curl.
+        radial_norm = np.clip(radius / 1.25, 0.0, 1.0)
+        omega = (0.010 + 0.052 * motion) * (1.25 - 0.55 * radial_norm)
+        arm_phase = 0.35 * np.sin(self.arm_count * theta - 0.035 * self.frame_idx)
+        theta_next = theta + omega + 0.020 * distortion * arm_phase
 
-        noise_amp = 0.00045 + noise * 0.0055
-        noise_term = np.random.normal(0.0, noise_amp, size=self.positions.shape)
+        inward = 0.00055 + 0.0028 * distortion
+        breathing = 0.00035 * np.sin(0.028 * self.frame_idx + 4.0 * theta)
+        radial_noise = np.random.normal(0.0, 0.00025 + 0.0009 * noise, size=radius.shape)
+        radius_next = np.clip(radius - inward * radial_norm + breathing + radial_noise, 0.04, 1.22)
 
-        self.velocities = (
-            np.where(
-                (radius / 1.25)[:, None] < 0.4,
-                0.908 * self.velocities,   # inner core: tighter spin
-                0.948 * self.velocities,   # outer arms: looser trail
-            )
-            + speed * drift
-            + swirl_strength * tangential
-            + core_pull_strength[:, None] * radial_inward
-            + noise_term
-        )
-        self.positions = self.positions + self.velocities
+        next_pos = np.column_stack([radius_next * np.cos(theta_next), radius_next * np.sin(theta_next)]).astype(np.float32)
+        self.velocities = 0.82 * self.velocities + 0.18 * (next_pos - self.positions)
+        self.positions = next_pos
 
         radius = np.linalg.norm(self.positions, axis=1)
         out = radius > 1.25
         if np.any(out):
-            self.positions[out] *= 0.15
-            self.velocities[out] *= -0.35
+            self.positions[out] *= 0.22
+            self.velocities[out] *= -0.25
 
         radius_now = np.linalg.norm(self.positions, axis=1)
         warm_bias = np.clip(1.0 - radius_now / 1.25, 0.0, 1.0)
@@ -449,7 +496,7 @@ class VisualEngine:
         expected_max = 0.0007 + motion * 0.0062 + 2e-4  # rough expected ceiling
         vel_norm = np.clip(vel_mag / (expected_max + 1e-8), 0.0, 1.0)
 
-        base_size = 3.5 + 14.0 * density + 5.0 * motion + 16.0 * core_emphasis + 16.0 * flash_t
+        base_size = 4.2 + 12.0 * density + 5.5 * motion + 18.0 * core_emphasis + 16.0 * flash_t
         sizes = base_size * (0.55 + 0.95 * vel_norm)  # per-particle: 0.55x–1.5x base
 
         alpha_base = 0.18 + 0.55 * (0.55 * density + 0.45 * color_dyn)
@@ -474,8 +521,10 @@ class VisualEngine:
             self.info_text.set_text(self._build_info_panel(self.latest_model_params))
         if self.regime_text is not None:
             self.regime_text.set_text(self._build_regime_panel())
+        if self.market_text is not None:
+            self.market_text.set_text(self._build_market_panel())
 
         self.frame_idx += 1
-        self.fig.canvas.draw()
+        self.fig.canvas.draw_idle()
         self.fig.canvas.flush_events()
         

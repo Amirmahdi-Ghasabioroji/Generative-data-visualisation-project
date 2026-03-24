@@ -131,6 +131,146 @@ NUMERICAL_KEYS = [
     "volume_per_trade", "taker_ratio"
 ]
 
+
+def _robust_unit_from_series(values: np.ndarray) -> float:
+    """Map latest value to [0,1] using robust rolling median/MAD scaling."""
+    arr = np.asarray(values, dtype=np.float64)
+    if arr.size == 0:
+        return 0.5
+    x = float(arr[-1])
+    med = float(np.median(arr))
+    mad = float(np.median(np.abs(arr - med))) + 1e-8
+    z = (x - med) / (1.4826 * mad)
+    return float(1.0 / (1.0 + np.exp(-z)))
+
+
+def _rolling_std_series(values: np.ndarray, window: int) -> np.ndarray:
+    arr = np.asarray(values, dtype=np.float64)
+    n = arr.size
+    if n < max(3, window):
+        return np.asarray([float(np.std(arr))], dtype=np.float64)
+    out = [float(np.std(arr[i - window:i])) for i in range(window, n + 1)]
+    return np.asarray(out, dtype=np.float64)
+
+
+def _rolling_mean_abs_series(values: np.ndarray, window: int) -> np.ndarray:
+    arr = np.asarray(values, dtype=np.float64)
+    n = arr.size
+    if n < max(3, window):
+        return np.asarray([float(np.mean(np.abs(arr)))], dtype=np.float64)
+    out = [float(np.mean(np.abs(arr[i - window:i]))) for i in range(window, n + 1)]
+    return np.asarray(out, dtype=np.float64)
+
+
+def build_market_condition_factors(symbol: str) -> dict:
+    """
+    Build interpretable live market-condition factors in [0,1] from rolling raw buffer.
+
+    Returns keys aligned with multimodal theta semantics:
+    - turbulence, trend_bias, distortion, fragmentation, velocity
+    """
+    buf = list(buffers[symbol])
+    if len(buf) < 20:
+        return {
+            "turbulence": 0.5,
+            "trend_bias": 0.5,
+            "distortion": 0.5,
+            "fragmentation": 0.5,
+            "velocity": 0.5,
+            "quality": 0.0,
+        }
+
+    close = np.asarray([float(r["close"]) for r in buf], dtype=np.float64)
+    volume = np.asarray([float(r["volume"]) for r in buf], dtype=np.float64)
+    trades = np.asarray([float(r["num_trades"]) for r in buf], dtype=np.float64)
+    price_range = np.asarray([float(r["price_range"]) for r in buf], dtype=np.float64)
+    taker_ratio = np.asarray([float(r["taker_ratio"]) for r in buf], dtype=np.float64)
+
+    ret = np.diff(np.log(np.maximum(close, 1e-9)))
+    if ret.size < 8:
+        return {
+            "turbulence": 0.5,
+            "trend_bias": 0.5,
+            "distortion": 0.5,
+            "fragmentation": 0.5,
+            "velocity": 0.5,
+            "quality": 0.15,
+        }
+
+    w_short = min(24, ret.size)
+    w_mid = min(72, ret.size)
+    w_long = min(144, ret.size)
+
+    rv_short = float(np.std(ret[-w_short:]))
+    rv_mid = float(np.std(ret[-w_mid:]))
+    rv_long = float(np.std(ret[-w_long:]))
+
+    mu_short = float(np.mean(ret[-w_short:]))
+    mu_mid = float(np.mean(ret[-w_mid:]))
+    mu_long = float(np.mean(ret[-w_long:]))
+    trend_strength = abs(mu_short)
+
+    # Sign-aware trend bias: combine drift + EMA spread; scaled for 30m BTC returns.
+    ema_short = float(np.mean(close[-min(len(close), 16):]))
+    ema_long = float(np.mean(close[-min(len(close), 96):]))
+    ema_spread = (ema_short - ema_long) / (abs(ema_long) + 1e-8)
+    drift_delta = mu_short - mu_long
+    trend_raw = 0.58 * ema_spread + 0.42 * drift_delta
+    trend_bias = float(0.5 + 0.5 * np.tanh(220.0 * trend_raw))
+
+    # Distortion rises when short-term dynamics diverge from medium-term baseline.
+    volatility_shift = abs(rv_short - rv_mid) / (rv_mid + 1e-8)
+    drift_shift = abs(mu_short - mu_mid) / (abs(mu_mid) + 1e-8)
+    distortion_raw = 0.65 * volatility_shift + 0.35 * drift_shift
+
+    # Fragmentation proxy: choppy direction flips + order-flow inconsistency.
+    sign_changes = np.mean(np.abs(np.diff(np.sign(ret[-w_mid:])))) if w_mid > 2 else 0.0
+    taker_chop = np.std(taker_ratio[-min(80, len(taker_ratio)):])
+    fragmentation_raw = 0.70 * sign_changes + 0.30 * taker_chop
+
+    # Velocity proxy: recent movement and participation acceleration.
+    ret_speed = np.mean(np.abs(ret[-w_short:]))
+    vol_accel = np.mean(np.abs(np.diff(volume[-min(len(volume), 48):]))) if len(volume) > 2 else 0.0
+    trades_accel = np.mean(np.abs(np.diff(trades[-min(len(trades), 48):]))) if len(trades) > 2 else 0.0
+    velocity_raw = 0.50 * ret_speed + 0.30 * vol_accel + 0.20 * trades_accel
+
+    # Use rolling histories of same metrics so latest value is contextualized correctly.
+    rv_hist = _rolling_std_series(ret[-w_long:], max(6, min(24, w_short)))
+    turb_ratio_hist = rv_hist / (np.median(rv_hist) + 1e-8)
+    turbulence = _robust_unit_from_series(turb_ratio_hist)
+
+    distortion_hist = np.asarray(
+        [
+            abs(float(np.std(ret[max(0, i - w_short):i])) - float(np.std(ret[max(0, i - w_mid):i])))
+            / (float(np.std(ret[max(0, i - w_mid):i])) + 1e-8)
+            for i in range(max(w_mid, 8), ret.size + 1)
+        ],
+        dtype=np.float64,
+    )
+    if distortion_hist.size == 0:
+        distortion_hist = np.asarray([distortion_raw], dtype=np.float64)
+    distortion = _robust_unit_from_series(distortion_hist)
+
+    frag_hist = _rolling_mean_abs_series(np.diff(np.sign(ret[-w_mid:])), max(4, min(16, w_short // 2 + 1)))
+    frag_hist = 0.78 * frag_hist + 0.22 * np.std(taker_ratio[-min(80, len(taker_ratio)):])
+    fragmentation = _robust_unit_from_series(frag_hist)
+
+    velocity_hist = _rolling_mean_abs_series(ret[-w_long:], max(4, min(16, w_short // 2 + 1)))
+    velocity_hist = velocity_hist + 0.15 * np.abs(np.diff(volume[-min(len(volume), 96):])).mean() if len(volume) > 3 else velocity_hist
+    velocity = _robust_unit_from_series(np.asarray(velocity_hist, dtype=np.float64))
+
+    # Data quality proxy: enough rows + non-flat movement.
+    quality = float(np.clip((len(buf) / float(BUFFER_SIZE)) * (0.35 + 0.65 * np.clip(rv_short / (rv_long + 1e-8), 0.0, 2.0)), 0.0, 1.0))
+
+    return {
+        "turbulence": float(np.clip(turbulence, 0.0, 1.0)),
+        "trend_bias": float(np.clip(trend_bias, 0.0, 1.0)),
+        "distortion": float(np.clip(distortion, 0.0, 1.0)),
+        "fragmentation": float(np.clip(fragmentation, 0.0, 1.0)),
+        "velocity": float(np.clip(velocity, 0.0, 1.0)),
+        "quality": float(np.clip(quality, 0.0, 1.0)),
+    }
+
 def build_feature_matrix(symbol: str) -> np.ndarray:
     """
     Build a normalised (N, 10) numpy feature matrix from the buffer.

@@ -176,6 +176,40 @@ class StreamingLatentVisualMapper:
         self.regime_counts: Optional[np.ndarray] = None
         self.latest_regime_id: Optional[int] = None
         self.latest_regime_confidence: float = 0.0
+        self.smoothed_regime_confidence: float = 0.0
+
+        # Streaming z normalization state (persisted).
+        self.z_mean = np.zeros((self.pca_dim,), dtype=np.float32)
+        self.z_var = np.ones((self.pca_dim,), dtype=np.float32)
+        self.z_count = 0
+        self.z_ema_alpha = 0.02
+
+        # Regime stability controls.
+        self.regime_switch_margin = 0.03
+        self.confidence_ema_alpha = 0.20
+
+    def _normalize_z(self, z: np.ndarray) -> np.ndarray:
+        z = np.asarray(z, dtype=np.float32)
+        std = np.sqrt(np.maximum(self.z_var, 1e-6)).astype(np.float32)
+        return ((z - self.z_mean) / std).astype(np.float32)
+
+    def _update_z_stats(self, z_t: np.ndarray):
+        z_t = np.asarray(z_t, dtype=np.float32).reshape(-1)
+        if z_t.shape[0] != self.pca_dim:
+            return
+
+        if self.z_count == 0:
+            self.z_mean = z_t.astype(np.float32)
+            self.z_var = np.full((self.pca_dim,), 1e-2, dtype=np.float32)
+            self.z_count = 1
+            return
+
+        alpha = float(self.z_ema_alpha)
+        delta = z_t - self.z_mean
+        self.z_mean = (1.0 - alpha) * self.z_mean + alpha * z_t
+        self.z_var = (1.0 - alpha) * self.z_var + alpha * np.square(delta)
+        self.z_var = np.maximum(self.z_var, 1e-6).astype(np.float32)
+        self.z_count += 1
 
     def _bottleneck_batch(self, z_batch: np.ndarray) -> np.ndarray:
         if self.model is None:
@@ -183,7 +217,8 @@ class StreamingLatentVisualMapper:
         z_batch = np.asarray(z_batch, dtype=np.float32)
         if z_batch.ndim != 2 or z_batch.shape[1] != self.pca_dim:
             raise ValueError(f"Expected z_batch shape (N, {self.pca_dim}).")
-        h = self.model.encoder(z_batch, training=False)
+        z_batch_n = self._normalize_z(z_batch)
+        h = self.model.encoder(z_batch_n, training=False)
         return np.asarray(h.numpy(), dtype=np.float32)
 
     def _initialize_regimes(self, z_sequence: np.ndarray):
@@ -213,9 +248,13 @@ class StreamingLatentVisualMapper:
         best_dist = float(distances[best_id])
         second_dist = float(distances[sorted_idx[1]]) if len(sorted_idx) > 1 else best_dist + 1e-6
 
-        # Margin-based confidence: how much closer the winner is vs the runner-up
-        margin = (second_dist - best_dist) / (second_dist + 1e-6)
-        confidence = float(np.clip(margin, 0.0, 1.0))
+        # Separation-aware confidence scaled by overall local distance spread.
+        # This avoids chronically tiny values when clusters are close in absolute terms.
+        separation = second_dist - best_dist
+        spread_scale = float(np.mean(distances) + np.std(distances) + 1e-6)
+        sep_score = separation / spread_scale
+        confidence = float(1.0 / (1.0 + np.exp(-8.0 * sep_score)))
+        confidence = float(np.clip((confidence - 0.5) * 2.0, 0.0, 1.0))
 
         return best_id, confidence
 
@@ -244,14 +283,24 @@ class StreamingLatentVisualMapper:
 
         h_t = self._bottleneck_batch(np.asarray(z_t, dtype=np.float32).reshape(1, -1))[0]
         regime_id, confidence = self._assign_regime(h_t, current_regime_id=self.latest_regime_id)
+
+        # Hysteresis: avoid rapid flips unless confidence margin is meaningful.
+        if self.latest_regime_id is not None and regime_id != self.latest_regime_id and confidence < self.regime_switch_margin:
+            regime_id = int(self.latest_regime_id)
+
         self._update_regime_centroid(regime_id, h_t)
         self.latest_regime_id = regime_id
-        self.latest_regime_confidence = confidence
+        self.latest_regime_confidence = float(confidence)
+        self.smoothed_regime_confidence = float(
+            (1.0 - self.confidence_ema_alpha) * self.smoothed_regime_confidence
+            + self.confidence_ema_alpha * confidence
+        )
 
     def get_latest_regime_info(self) -> Dict[str, Any]:
         return {
             "regime_id": self.latest_regime_id,
-            "confidence": float(self.latest_regime_confidence),
+            "confidence": float(self.smoothed_regime_confidence),
+            "raw_confidence": float(self.latest_regime_confidence),
             "n_regimes": int(self.n_regimes),
         }
 
@@ -320,10 +369,15 @@ class StreamingLatentVisualMapper:
         if z_sequence.shape[0] < 8:
             raise ValueError("Need at least 8 latent rows for warmup training.")
 
-        cfg = self._auto_choose_config(z_sequence)
+        self.z_mean = np.mean(z_sequence, axis=0).astype(np.float32)
+        self.z_var = np.var(z_sequence, axis=0).astype(np.float32) + 1e-6
+        self.z_count = int(z_sequence.shape[0])
+        z_norm = self._normalize_z(z_sequence)
+
+        cfg = self._auto_choose_config(z_norm)
         self._build_model(cfg)
 
-        self.model.fit(z_sequence, epochs=epochs, batch_size=batch_size, shuffle=False, verbose=verbose)
+        self.model.fit(z_norm, epochs=epochs, batch_size=batch_size, shuffle=False, verbose=verbose)
         self.stream_buffer.clear()
         for row in z_sequence[-self.stream_buffer.maxlen:]:
             self.stream_buffer.append(np.asarray(row, dtype=np.float32))
@@ -338,7 +392,10 @@ class StreamingLatentVisualMapper:
             return
 
         z_window = np.asarray(list(self.stream_buffer)[-self.train_window:], dtype=np.float32)
-        self.model.fit(z_window, epochs=epochs, batch_size=min(batch_size, len(z_window)), shuffle=False, verbose=verbose)
+        if float(np.mean(np.var(z_window, axis=0))) < 1e-4:
+            return
+        z_window_n = self._normalize_z(z_window)
+        self.model.fit(z_window_n, epochs=epochs, batch_size=min(batch_size, len(z_window_n)), shuffle=False, verbose=verbose)
 
     def interpolate_latents(self, z_prev: np.ndarray, z_curr: np.ndarray, steps: Optional[int] = None) -> np.ndarray:
         z_prev = np.asarray(z_prev, dtype=np.float32).reshape(-1)
@@ -357,6 +414,7 @@ class StreamingLatentVisualMapper:
         z = np.asarray(z, dtype=np.float32).reshape(1, -1)
         if z.shape[1] != self.pca_dim:
             raise ValueError(f"z must have {self.pca_dim} components.")
+        z = self._normalize_z(z)
 
         _, params = self.model(z, training=False)
         params_np = params.numpy()[0]
@@ -372,6 +430,8 @@ class StreamingLatentVisualMapper:
             raise ValueError(f"z_t must have length {self.pca_dim}.")
         if self.model is None:
             raise RuntimeError("Model is not initialized. Run warmup_train(...) or load().")
+
+        self._update_z_stats(z_t)
 
         self.stream_buffer.append(z_t)
         self.step_count += 1
@@ -405,6 +465,12 @@ class StreamingLatentVisualMapper:
                 "counts": self.regime_counts.tolist() if self.regime_counts is not None else None,
                 "latest_regime_id": self.latest_regime_id,
                 "latest_regime_confidence": float(self.latest_regime_confidence),
+                "smoothed_regime_confidence": float(self.smoothed_regime_confidence),
+            },
+            "z_norm_state": {
+                "mean": self.z_mean.tolist(),
+                "var": self.z_var.tolist(),
+                "count": int(self.z_count),
             },
         }
         self.config_path.write_text(json.dumps(config_payload, indent=2), encoding="utf-8")
@@ -443,6 +509,17 @@ class StreamingLatentVisualMapper:
 
         self.latest_regime_id = regime_state.get("latest_regime_id") if isinstance(regime_state, dict) else None
         self.latest_regime_confidence = float(regime_state.get("latest_regime_confidence", 0.0)) if isinstance(regime_state, dict) else 0.0
+        self.smoothed_regime_confidence = float(regime_state.get("smoothed_regime_confidence", self.latest_regime_confidence)) if isinstance(regime_state, dict) else self.latest_regime_confidence
+
+        z_norm_state = payload.get("z_norm_state", {})
+        if isinstance(z_norm_state, dict):
+            mean_arr = np.asarray(z_norm_state.get("mean", self.z_mean.tolist()), dtype=np.float32).reshape(-1)
+            var_arr = np.asarray(z_norm_state.get("var", self.z_var.tolist()), dtype=np.float32).reshape(-1)
+            if mean_arr.shape[0] == self.pca_dim:
+                self.z_mean = mean_arr
+            if var_arr.shape[0] == self.pca_dim:
+                self.z_var = np.maximum(var_arr, 1e-6)
+            self.z_count = int(z_norm_state.get("count", self.z_count))
         return True
 
 

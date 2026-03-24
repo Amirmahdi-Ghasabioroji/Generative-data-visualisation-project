@@ -60,12 +60,66 @@ class LiveBTCVisualBridge:
         self.pca_warmup: Deque[np.ndarray] = deque(maxlen=max(WARMUP_POINTS * 2, 192))
         self.prev_latent: Optional[np.ndarray] = None
         self.last_visual_params: Optional[Dict[str, float]] = None
+        self.last_market_condition: Dict[str, float] = {
+            "turbulence": 0.5,
+            "trend_bias": 0.5,
+            "distortion": 0.5,
+            "fragmentation": 0.5,
+            "velocity": 0.5,
+            "quality": 0.0,
+        }
         self.last_regime_info: Dict[str, object] = {
             "regime_id": None,
             "confidence": 0.0,
             "n_regimes": 0,
         }
         self.visual_engine = VisualEngine()
+
+    @staticmethod
+    def _clip01(v: float) -> float:
+        return float(np.clip(v, 0.0, 1.0))
+
+    def _blend_semantic_params(self, mapper_params: Dict[str, float], market_condition: Dict[str, float]) -> Dict[str, float]:
+        # Preserve mapper personality but anchor controls to interpretable market factors.
+        q = self._clip01(float(market_condition.get("quality", 0.0)))
+        turbulence = self._clip01(float(market_condition.get("turbulence", 0.5)))
+        trend_bias = self._clip01(float(market_condition.get("trend_bias", 0.5)))
+        distortion = self._clip01(float(market_condition.get("distortion", 0.5)))
+        fragmentation = self._clip01(float(market_condition.get("fragmentation", 0.5)))
+        velocity = self._clip01(float(market_condition.get("velocity", 0.5)))
+
+        # Increase semantic influence as data quality becomes reliable.
+        w_sem = 0.25 + 0.50 * q
+
+        p = {k: self._clip01(float(mapper_params.get(k, 0.5))) for k in mapper_params.keys()}
+        out = dict(p)
+        out["motion_intensity"] = self._clip01((1.0 - w_sem) * p["motion_intensity"] + w_sem * (0.52 * velocity + 0.48 * turbulence))
+        out["particle_density"] = self._clip01((1.0 - w_sem) * p["particle_density"] + w_sem * (1.0 - 0.72 * fragmentation))
+        out["distortion_strength"] = self._clip01((1.0 - w_sem) * p["distortion_strength"] + w_sem * distortion)
+        out["noise_scale"] = self._clip01((1.0 - w_sem) * p["noise_scale"] + w_sem * (0.62 * fragmentation + 0.38 * turbulence))
+        out["color_dynamics"] = self._clip01((1.0 - w_sem) * p["color_dynamics"] + w_sem * (0.56 * abs(trend_bias - 0.5) * 2.0 + 0.44 * velocity))
+        return out
+
+    def _enrich_live_latent(self, z_t: np.ndarray, market_condition: Dict[str, float]) -> np.ndarray:
+        # Keep 3D dimensionality unchanged; inject low-amplitude semantic drift.
+        z = np.asarray(z_t, dtype=np.float32).reshape(-1)
+        if z.shape[0] != 3:
+            return z
+
+        turbulence = self._clip01(float(market_condition.get("turbulence", 0.5)))
+        trend_bias = self._clip01(float(market_condition.get("trend_bias", 0.5)))
+        distortion = self._clip01(float(market_condition.get("distortion", 0.5)))
+        fragmentation = self._clip01(float(market_condition.get("fragmentation", 0.5)))
+        velocity = self._clip01(float(market_condition.get("velocity", 0.5)))
+        q = self._clip01(float(market_condition.get("quality", 0.0)))
+
+        # Small semantic perturbation vector; scaled by quality to avoid startup noise.
+        semantic = np.array([
+            0.55 * (trend_bias - 0.5) + 0.35 * (velocity - 0.5),
+            0.60 * (distortion - 0.5) + 0.25 * (fragmentation - 0.5),
+            0.65 * (turbulence - 0.5) + 0.20 * (fragmentation - 0.5),
+        ], dtype=np.float32)
+        return (z + (0.18 + 0.22 * q) * semantic).astype(np.float32)
 
     def _try_warmup(self):
         if self.model_ready:
@@ -84,26 +138,38 @@ class LiveBTCVisualBridge:
         self.model_ready = True
         print(f"[VISUAL] Mapper warmup complete with {len(warmup_array)} PCA points.")
 
-    def on_new_latent(self, z_t: np.ndarray) -> Optional[Dict[str, float]]:
+    def on_new_latent(self, z_t: np.ndarray, market_condition: Optional[Dict[str, float]] = None) -> Optional[Dict[str, float]]:
         z_t = np.asarray(z_t, dtype=np.float32).reshape(-1)
-        self.pca_warmup.append(z_t)
+        if market_condition is None:
+            market_condition = self.last_market_condition
+        self.last_market_condition = {
+            "turbulence": float(market_condition.get("turbulence", 0.5)),
+            "trend_bias": float(market_condition.get("trend_bias", 0.5)),
+            "distortion": float(market_condition.get("distortion", 0.5)),
+            "fragmentation": float(market_condition.get("fragmentation", 0.5)),
+            "velocity": float(market_condition.get("velocity", 0.5)),
+            "quality": float(market_condition.get("quality", 0.0)),
+        }
+
+        z_in = self._enrich_live_latent(z_t, self.last_market_condition)
+        self.pca_warmup.append(z_in)
 
         self._try_warmup()
         if not self.model_ready:
             print(f"[VISUAL] Warmup collecting PCA points: {len(self.pca_warmup)}/{WARMUP_POINTS}")
-            self.prev_latent = z_t
+            self.prev_latent = z_in
             return None
 
-        params = self.mapper.process_stream_step(z_t)
+        params = self.mapper.process_stream_step(z_in)
 
         if self.prev_latent is not None:
-            traversal = self.mapper.traversal_parameters(self.prev_latent, z_t, steps=TRAVERSAL_STEPS)
+            traversal = self.mapper.traversal_parameters(self.prev_latent, z_in, steps=TRAVERSAL_STEPS)
             params = traversal[-1]
 
-        self.prev_latent = z_t
-        self.last_visual_params = params
+        self.prev_latent = z_in
+        self.last_visual_params = self._blend_semantic_params(params, self.last_market_condition)
         self.last_regime_info = self.mapper.get_latest_regime_info()
-        return params
+        return self.last_visual_params
 
 
 async def stream_btc_visual_parameters() -> None:
@@ -127,7 +193,11 @@ async def stream_btc_visual_parameters() -> None:
                     msg = await asyncio.wait_for(stream.recv(), timeout=0.08)
                 except asyncio.TimeoutError:
                     if bridge.last_visual_params is not None:
-                        bridge.visual_engine.render(bridge.last_visual_params, regime_info=bridge.last_regime_info)
+                        bridge.visual_engine.render(
+                            bridge.last_visual_params,
+                            regime_info=bridge.last_regime_info,
+                            market_condition=bridge.last_market_condition,
+                        )
                     continue
 
                 if msg.get("e") == "error":
@@ -138,7 +208,11 @@ async def stream_btc_visual_parameters() -> None:
                 row = rtc.extract_features(kline, rtc.SYMBOLS[0])
                 if row is None:
                     if bridge.last_visual_params is not None:
-                        bridge.visual_engine.render(bridge.last_visual_params, regime_info=bridge.last_regime_info)
+                        bridge.visual_engine.render(
+                            bridge.last_visual_params,
+                            regime_info=bridge.last_regime_info,
+                            market_condition=bridge.last_market_condition,
+                        )
                     continue
 
                 rtc.buffers[rtc.SYMBOLS[0]].append(row)
@@ -146,19 +220,28 @@ async def stream_btc_visual_parameters() -> None:
 
                 matrix = rtc.build_feature_matrix(rtc.SYMBOLS[0])
                 pca_latest = pca_runner.run_pca(rtc.SYMBOLS[0], matrix)
+                market_condition = rtc.build_market_condition_factors(rtc.SYMBOLS[0])
 
                 if pca_latest is None:
                     min_rows = max(pca_runner.PCA_N_COMPONENTS + 1, 2)
                     print(f"[{rtc.SYMBOLS[0]}] PCA waiting: need >= {min_rows}, have {matrix.shape[0]}")
                     continue
 
-                visual_params = bridge.on_new_latent(np.asarray(pca_latest, dtype=np.float32))
+                visual_params = bridge.on_new_latent(np.asarray(pca_latest, dtype=np.float32), market_condition=market_condition)
                 if visual_params is None:
                     if bridge.last_visual_params is not None:
-                        bridge.visual_engine.render(bridge.last_visual_params, regime_info=bridge.last_regime_info)
+                        bridge.visual_engine.render(
+                            bridge.last_visual_params,
+                            regime_info=bridge.last_regime_info,
+                            market_condition=bridge.last_market_condition,
+                        )
                     continue
 
-                bridge.visual_engine.render(visual_params, regime_info=bridge.last_regime_info)
+                bridge.visual_engine.render(
+                    visual_params,
+                    regime_info=bridge.last_regime_info,
+                    market_condition=bridge.last_market_condition,
+                )
                 regime_id = bridge.last_regime_info.get("regime_id")
                 regime_conf = float(bridge.last_regime_info.get("confidence", 0.0))
                 n_regimes = int(bridge.last_regime_info.get("n_regimes", 0))
@@ -168,7 +251,13 @@ async def stream_btc_visual_parameters() -> None:
                     else "R?/?: warming"
                 )
                 print(
-                    f"[VISUAL] {', '.join(f'{k}={v:.3f}' for k, v in visual_params.items())} | {regime_label}"
+                    f"[VISUAL] {', '.join(f'{k}={v:.3f}' for k, v in visual_params.items())} | "
+                    f"T={bridge.last_market_condition['turbulence']:.3f} "
+                    f"B={bridge.last_market_condition['trend_bias']:.3f} "
+                    f"D={bridge.last_market_condition['distortion']:.3f} "
+                    f"F={bridge.last_market_condition['fragmentation']:.3f} "
+                    f"V={bridge.last_market_condition['velocity']:.3f} "
+                    f"Q={bridge.last_market_condition['quality']:.3f} | {regime_label}"
                 )
 
     except KeyboardInterrupt:
