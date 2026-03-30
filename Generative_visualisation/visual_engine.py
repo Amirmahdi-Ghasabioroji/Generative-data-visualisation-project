@@ -136,7 +136,7 @@ class VisualEngine:
 
         self.interpret_text = self.fig.text(
             0.69,
-            0.42,
+            0.38,
             self._build_interpretation_panel(),
             color="white",
             fontsize=8,
@@ -148,19 +148,19 @@ class VisualEngine:
 
         self.heatmap_ax = self.fig.add_axes([0.69, 0.09, 0.27, 0.05])
         gradient = np.linspace(0, 1, 256, dtype=np.float32).reshape(1, -1)
-        self.heatmap_ax.imshow(gradient, aspect="auto", cmap="RdYlBu", extent=[0, 1, 0, 1])
+        self.heatmap_ax.imshow(gradient, aspect="auto", cmap="RdYlGn", extent=[0, 1, 0, 1])
         self.heatmap_ax.set_yticks([])
         self.heatmap_ax.set_xticks([0.0, 0.5, 1.0])
-        self.heatmap_ax.set_xticklabels(["bearish (cold)", "neutral", "bullish (warm)"], color="white", fontsize=8)
-        self.heatmap_ax.set_title("Particle colour heatmap (RdYlBu)", color="white", fontsize=8, pad=2)
+        self.heatmap_ax.set_xticklabels(["bearish (red)", "neutral", "bullish (green)"], color="white", fontsize=8)
+        self.heatmap_ax.set_title("Particle colour heatmap (Classic R/G)", color="white", fontsize=8, pad=2)
         self.heatmap_ax.set_facecolor("#0b1220")
         for spine in self.heatmap_ax.spines.values():
             spine.set_edgecolor("#334155")
 
         self.heatmap_text = self.fig.text(
             0.69,
-            0.24,
-            "Colour meaning: blues=bearish/calm, reds=bullish/chaotic",
+            0.17,
+            "Colour meaning: red=bearish, yellow=neutral, green=bullish",
             color="#cbd5e1",
             fontsize=7.5,
             va="top",
@@ -196,6 +196,8 @@ class VisualEngine:
             "  -> motion + distortion typically increase\n"
             "- Sudden regime changes -> stronger noise/jitter\n"
             "- Stable periods -> smoother flow + slower drift\n"
+            "- Velocity/speed shows how fast the latent state\n"
+            "  is changing right now (tempo of regime movement)\n"
             "- PCA cluster drift reflects regime migration\n"
             "  (trend, consolidation, shock transitions)\n"
             "- Color dynamics rises when latent trajectory\n"
@@ -232,7 +234,7 @@ class VisualEngine:
             f"trend bias  : {trend_bias:0.3f}  [0=bear 1=bull]\n"
             f"distortion  : {distortion:0.3f}  [regime shift]\n"
             f"fragmentation: {fragmentation:0.3f}  [choppiness]\n"
-            f"velocity    : {velocity:0.3f}  [speed]\n"
+            f"velocity    : {velocity:0.3f}  [state-change speed]\n"
             f"quality     : {quality:0.3f}  [confidence]"
         )
 
@@ -311,7 +313,7 @@ class VisualEngine:
 
         # Each particle gets a fixed phase seed so colour ripples across the cloud
         self.phase_offsets = np.random.uniform(0.0, 1.0, size=n_particles).astype(np.float32)
-        self.colors = cm.RdYlBu(np.linspace(0, 1, n_particles))
+        self.colors = cm.RdYlGn(np.linspace(0, 1, n_particles))
 
     def _sample_galaxy_positions(self, n_particles: int) -> np.ndarray:
         if n_particles <= 0:
@@ -376,7 +378,7 @@ class VisualEngine:
         speed = 0.0011 + 0.0038 * (1.0 - np.clip(radius / 1.25, 0.0, 1.0))
         new_vel = (tangential * speed[:, None] + np.random.normal(0.0, 0.0010, size=(add, 2))).astype(np.float32)
 
-        new_colors = cm.twilight(np.random.uniform(0.0, 1.0, size=add))
+        new_colors = cm.RdYlGn(np.random.uniform(0.0, 1.0, size=add))
         new_offsets = np.random.uniform(0.0, 1.0, size=add).astype(np.float32)
 
         self.positions = np.vstack([self.positions, new_pos])
@@ -475,9 +477,9 @@ class VisualEngine:
 
         # Spiral flow with loostened constraints for smoother drift
         radial_norm = np.clip(radius / 1.25, 0.0, 1.0)
-        omega = (0.0088 + 0.0495 * motion) * (1.25 - 0.50 * radial_norm)
-        arm_phase = 0.28 * np.sin(self.arm_count * theta - 0.035 * self.frame_idx)
-        theta_next = theta + omega + 0.0165 * distortion * arm_phase
+        omega = (0.0096 + 0.0580 * motion) * (1.25 - 0.46 * radial_norm)
+        arm_phase = 0.38 * np.sin(self.arm_count * theta - 0.040 * self.frame_idx)
+        theta_next = theta + omega + 0.0240 * distortion * arm_phase
 
         inward = 0.00039 + 0.0022 * distortion
         breathing = 0.00040 * np.sin(0.022 * self.frame_idx + 3.5 * theta)
@@ -500,7 +502,7 @@ class VisualEngine:
         # Per-particle phase offset makes colour ripple across cloud rather than pulsing in unison
         offsets = self.phase_offsets if self.phase_offsets is not None else 0.0
         phase = (offsets + 0.75 * warm_bias + self.frame_idx * (0.0006 + 0.012 * color_dyn)) % 1.0
-        self.colors = cm.RdYlBu(phase)
+        self.colors = cm.RdYlGn(phase)
 
         # Strengthen colour intensity (vivid highlights while preserving palette ordering)
         self.colors[:, :3] = np.clip(self.colors[:, :3] ** 0.82, 0.0, 1.0)
