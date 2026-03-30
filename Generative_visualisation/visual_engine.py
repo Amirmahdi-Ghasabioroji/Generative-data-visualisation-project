@@ -458,6 +458,7 @@ class VisualEngine:
         distortion = self.current_params["distortion_strength"]
         noise = self.current_params["noise_scale"]
         color_dyn = self.current_params["color_dynamics"]
+        trend_bias = float(np.clip(float(self.latest_market_condition.get("trend_bias", 0.5)), 0.0, 1.0))
 
         n_particles = int(self.base_particles + density * 440)
         self._resize_particles(n_particles)
@@ -499,9 +500,13 @@ class VisualEngine:
 
         radius_now = np.linalg.norm(self.positions, axis=1)
         warm_bias = np.clip(1.0 - radius_now / 1.25, 0.0, 1.0)
-        # Per-particle phase offset makes colour ripple across cloud rather than pulsing in unison
+        # Colour is anchored to live market trend_bias:
+        # bearish(0) -> red, neutral(0.5) -> yellow, bullish(1) -> green.
+        # Keep a light spatial/time texture so the cloud is not flat.
         offsets = self.phase_offsets if self.phase_offsets is not None else 0.0
-        phase = (offsets + 0.75 * warm_bias + self.frame_idx * (0.0006 + 0.012 * color_dyn)) % 1.0
+        texture = 0.12 * (offsets - 0.5) + 0.10 * (warm_bias - 0.5)
+        shimmer = 0.05 * np.sin(self.frame_idx * (0.003 + 0.014 * color_dyn) + 6.0 * offsets)
+        phase = np.clip(trend_bias + texture + shimmer, 0.0, 1.0)
         self.colors = cm.RdYlGn(phase)
 
         # Strengthen colour intensity (vivid highlights while preserving palette ordering)
