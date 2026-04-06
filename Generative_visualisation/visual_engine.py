@@ -44,8 +44,9 @@ class VisualEngine:
         self.glow_patch = None         # soft central glow
 
         self.frame_idx = 0
-        self.smoothing_alpha = 0.10
-        self.tick_interval_ms = 21
+        # Lower alpha smooths parameter transitions between sparse upstream updates.
+        self.smoothing_alpha = 0.07
+        self.tick_interval_ms = 16
         self.current_params = {
             "motion_intensity": 0.5,
             "particle_density": 0.5,
@@ -435,9 +436,11 @@ class VisualEngine:
         if self.market_text is not None:
             self.market_text.set_text(self._build_market_panel())
 
-        if self.fig is not None:
-            self.fig.canvas.draw()
-            self.fig.canvas.flush_events()
+    def pump_events(self):
+        """Process GUI events so timer-driven animation can run smoothly."""
+        if self.fig is None:
+            return
+        plt.pause(0.001)
 
         
 

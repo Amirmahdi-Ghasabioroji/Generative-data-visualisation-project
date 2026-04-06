@@ -16,6 +16,7 @@ from collections import deque
 from pathlib import Path
 from typing import Deque, Dict, Optional
 import sys
+import time
 
 import numpy as np
 from binance import AsyncClient, BinanceSocketManager
@@ -41,6 +42,10 @@ MODEL_DIR = Path("AI_systems") / "latent_mapper_artifacts"
 WARMUP_POINTS = 10
 WARMUP_EPOCHS = 10
 TRAVERSAL_STEPS = 6
+RENDER_FPS = 60.0
+# Buffered playback delay to absorb websocket/update jitter before rendering.
+RENDER_DELAY_SEC = 0.30
+MAX_RENDER_BUFFER_SEC = 3.0
 
 
 class LiveBTCVisualBridge:
@@ -73,6 +78,7 @@ class LiveBTCVisualBridge:
             "confidence": 0.0,
             "n_regimes": 0,
         }
+        self.render_buffer: Deque[dict] = deque(maxlen=240)
         self.visual_engine = VisualEngine()
 
     @staticmethod
@@ -120,6 +126,89 @@ class LiveBTCVisualBridge:
             0.65 * (turbulence - 0.5) + 0.20 * (fragmentation - 0.5),
         ], dtype=np.float32)
         return (z + (0.18 + 0.22 * q) * semantic).astype(np.float32)
+
+    @staticmethod
+    def _lerp_float_dict(a: Dict[str, float], b: Dict[str, float], alpha: float) -> Dict[str, float]:
+        alpha = float(np.clip(alpha, 0.0, 1.0))
+        keys = set(a.keys()) | set(b.keys())
+        out: Dict[str, float] = {}
+        for k in keys:
+            av = float(a.get(k, b.get(k, 0.0)))
+            bv = float(b.get(k, a.get(k, 0.0)))
+            out[k] = float((1.0 - alpha) * av + alpha * bv)
+        return out
+
+    @staticmethod
+    def _blend_regime_info(a: Dict[str, object], b: Dict[str, object], alpha: float) -> Dict[str, object]:
+        alpha = float(np.clip(alpha, 0.0, 1.0))
+        regime_id = a.get("regime_id") if alpha < 0.5 else b.get("regime_id")
+        conf_a = float(a.get("confidence", 0.0))
+        conf_b = float(b.get("confidence", 0.0))
+        n_a = int(a.get("n_regimes", 0) or 0)
+        n_b = int(b.get("n_regimes", 0) or 0)
+        return {
+            "regime_id": regime_id,
+            "confidence": float((1.0 - alpha) * conf_a + alpha * conf_b),
+            "n_regimes": int(round((1.0 - alpha) * n_a + alpha * n_b)),
+        }
+
+    def _push_render_frame(self, timestamp: float, params: Dict[str, float], regime: Dict[str, object], market: Dict[str, float]) -> None:
+        self.render_buffer.append(
+            {
+                "ts": float(timestamp),
+                "params": {k: float(v) for k, v in params.items()},
+                "regime": dict(regime),
+                "market": {k: float(v) for k, v in market.items()},
+            }
+        )
+
+        # Keep a short, recent playback buffer.
+        while len(self.render_buffer) > 2:
+            oldest = float(self.render_buffer[0]["ts"])
+            newest = float(self.render_buffer[-1]["ts"])
+            if newest - oldest <= MAX_RENDER_BUFFER_SEC:
+                break
+            self.render_buffer.popleft()
+
+    def get_render_frame(self, target_ts: float) -> Optional[dict]:
+        if not self.render_buffer:
+            if self.last_visual_params is None:
+                return None
+            return {
+                "params": dict(self.last_visual_params),
+                "regime": dict(self.last_regime_info),
+                "market": dict(self.last_market_condition),
+            }
+
+        # Advance the left bound as time moves on so we interpolate on the latest segment.
+        while len(self.render_buffer) >= 2 and float(self.render_buffer[1]["ts"]) <= target_ts:
+            self.render_buffer.popleft()
+
+        if len(self.render_buffer) == 1:
+            return {
+                "params": dict(self.render_buffer[0]["params"]),
+                "regime": dict(self.render_buffer[0]["regime"]),
+                "market": dict(self.render_buffer[0]["market"]),
+            }
+
+        f0 = self.render_buffer[0]
+        f1 = self.render_buffer[1]
+        t0 = float(f0["ts"])
+        t1 = float(f1["ts"])
+
+        if t1 <= t0:
+            return {
+                "params": dict(f1["params"]),
+                "regime": dict(f1["regime"]),
+                "market": dict(f1["market"]),
+            }
+
+        alpha = float(np.clip((target_ts - t0) / (t1 - t0), 0.0, 1.0))
+        return {
+            "params": self._lerp_float_dict(f0["params"], f1["params"], alpha),
+            "regime": self._blend_regime_info(f0["regime"], f1["regime"], alpha),
+            "market": self._lerp_float_dict(f0["market"], f1["market"], alpha),
+        }
 
     def _try_warmup(self):
         if self.model_ready:
@@ -169,6 +258,12 @@ class LiveBTCVisualBridge:
         self.prev_latent = z_in
         self.last_visual_params = self._blend_semantic_params(params, self.last_market_condition)
         self.last_regime_info = self.mapper.get_latest_regime_info()
+        self._push_render_frame(
+            timestamp=time.perf_counter(),
+            params=self.last_visual_params,
+            regime=self.last_regime_info,
+            market=self.last_market_condition,
+        )
         return self.last_visual_params
 
 
@@ -183,6 +278,23 @@ async def stream_btc_visual_parameters() -> None:
     rtc.preload_buffers_from_csv(rtc.OUTPUT_DIR, rtc.BUFFER_SIZE)
     bridge = LiveBTCVisualBridge()
 
+    stop_render = asyncio.Event()
+
+    async def render_loop() -> None:
+        frame_dt = 1.0 / max(1.0, RENDER_FPS)
+        while not stop_render.is_set():
+            render_state = bridge.get_render_frame(time.perf_counter() - RENDER_DELAY_SEC)
+            if render_state is not None:
+                bridge.visual_engine.render(
+                    render_state["params"],
+                    regime_info=render_state["regime"],
+                    market_condition=render_state["market"],
+                )
+            bridge.visual_engine.pump_events()
+            await asyncio.sleep(frame_dt)
+
+    render_task = asyncio.create_task(render_loop())
+
     client = await AsyncClient.create()
     bm = BinanceSocketManager(client)
 
@@ -192,12 +304,6 @@ async def stream_btc_visual_parameters() -> None:
                 try:
                     msg = await asyncio.wait_for(stream.recv(), timeout=0.08)
                 except asyncio.TimeoutError:
-                    if bridge.last_visual_params is not None:
-                        bridge.visual_engine.render(
-                            bridge.last_visual_params,
-                            regime_info=bridge.last_regime_info,
-                            market_condition=bridge.last_market_condition,
-                        )
                     continue
 
                 if msg.get("e") == "error":
@@ -207,12 +313,6 @@ async def stream_btc_visual_parameters() -> None:
                 kline = msg["k"]
                 row = rtc.extract_features(kline, rtc.SYMBOLS[0])
                 if row is None:
-                    if bridge.last_visual_params is not None:
-                        bridge.visual_engine.render(
-                            bridge.last_visual_params,
-                            regime_info=bridge.last_regime_info,
-                            market_condition=bridge.last_market_condition,
-                        )
                     continue
 
                 rtc.buffers[rtc.SYMBOLS[0]].append(row)
@@ -229,19 +329,7 @@ async def stream_btc_visual_parameters() -> None:
 
                 visual_params = bridge.on_new_latent(np.asarray(pca_latest, dtype=np.float32), market_condition=market_condition)
                 if visual_params is None:
-                    if bridge.last_visual_params is not None:
-                        bridge.visual_engine.render(
-                            bridge.last_visual_params,
-                            regime_info=bridge.last_regime_info,
-                            market_condition=bridge.last_market_condition,
-                        )
                     continue
-
-                bridge.visual_engine.render(
-                    visual_params,
-                    regime_info=bridge.last_regime_info,
-                    market_condition=bridge.last_market_condition,
-                )
                 regime_id = bridge.last_regime_info.get("regime_id")
                 regime_conf = float(bridge.last_regime_info.get("confidence", 0.0))
                 n_regimes = int(bridge.last_regime_info.get("n_regimes", 0))
@@ -263,6 +351,12 @@ async def stream_btc_visual_parameters() -> None:
     except KeyboardInterrupt:
         print("\n[STOP] Interrupted by user.")
     finally:
+        stop_render.set()
+        render_task.cancel()
+        try:
+            await render_task
+        except asyncio.CancelledError:
+            pass
         bridge.mapper.save()
         await client.close_connection()
         print("[DONE] Connection closed and mapper state saved.")
