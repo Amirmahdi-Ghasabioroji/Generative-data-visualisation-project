@@ -15,7 +15,7 @@ Controls:
   - Slider: jump to any timestamp/index
   - Play/Pause button: autoplay
   - Left/Right arrows: step one frame
-    - Left-side θ1-θ4 sliders: interactive visual modulation
+        - Left-side θ0-θ4 sliders: interactive visual modulation
 """
 
 from __future__ import annotations
@@ -184,7 +184,8 @@ class TimelineVisualEngine:
         self.theta_control_sliders = []
         self.theta_control_reset_axes = []
         self.theta_control_reset_buttons = []
-        self.theta_control_scales = np.ones(4, dtype=np.float32)
+        self.theta_control_scales = np.ones(5, dtype=np.float32)
+        self.theta_market_box_ax = None
         self.heatmap_legend_ax = None
         self.heatmap_legend_text = None
 
@@ -304,7 +305,7 @@ class TimelineVisualEngine:
         self.play_button.on_clicked(self._on_play_pause)
         self.fig.canvas.mpl_connect("key_press_event", self._on_key_press)
 
-        # Interactive theta controls (θ1-θ4) for user-driven visual modulation.
+        # Interactive theta controls (θ0-θ4) for user-driven visual modulation.
         self.fig.text(
             0.03,
             0.905,
@@ -325,7 +326,7 @@ class TimelineVisualEngine:
             va="center",
         )
 
-        control_labels = ["θ1 Turb", "θ2 Trend", "θ3 Dist", "θ4 Frag"]
+        control_labels = ["θ0 Turb", "θ1 Trend", "θ2 Dist", "θ3 Frag", "θ4 Vel"]
         for i, label in enumerate(control_labels):
             y = 0.81 - i * 0.10
             ax_ctrl = self.fig.add_axes([0.03, y, 0.08, 0.026], facecolor="#0f1732")
@@ -358,6 +359,41 @@ class TimelineVisualEngine:
             self.theta_control_sliders.append(s)
             self.theta_control_reset_axes.append(ax_reset)
             self.theta_control_reset_buttons.append(btn)
+
+        # Market-facing theta definitions under the slider controls.
+        self.theta_market_box_ax = self.fig.add_axes([0.010, 0.145, 0.109, 0.145])
+        self.theta_market_box_ax.set_facecolor("#071022")
+        self.theta_market_box_ax.set_xticks([])
+        self.theta_market_box_ax.set_yticks([])
+        for spine in self.theta_market_box_ax.spines.values():
+            spine.set_color("#34507d")
+
+        self.theta_market_box_ax.text(
+            0.04,
+            0.94,
+            "Market interpretation",
+            transform=self.theta_market_box_ax.transAxes,
+            va="top",
+            ha="left",
+            color="#e7f0ff",
+            fontsize=7.2,
+            fontweight="bold",
+        )
+        self.theta_market_box_ax.text(
+            0.04,
+            0.77,
+            "t0: Market volatility change.\n"
+            "t1: Bearish/bullish pressure.\n"
+            "t2: Market regime instability.\n"
+            "t3: Market fragmented structure.\n"
+            "t4: Market state shifts' speed.",
+            transform=self.theta_market_box_ax.transAxes,
+            va="top",
+            ha="left",
+            color="#b7cdef",
+            fontsize=6.4,
+            linespacing=1.34,
+        )
 
         # Frequent timer ticks are used for interpolation; autoplay speed controls day cadence.
         self.timer = self.fig.canvas.new_timer(interval=self.timer_interval_ms)
@@ -414,10 +450,10 @@ class TimelineVisualEngine:
             "",
             va="top",
             ha="left",
-            fontsize=10,
+            fontsize=8.6,
             color="#eef4ff",
             family="monospace",
-            bbox={"facecolor": "#0a1224", "alpha": 0.76, "edgecolor": "#2a3f6d", "pad": 6},
+            bbox={"facecolor": "#0a1224", "alpha": 0.76, "edgecolor": "#2a3f6d", "pad": 4.5},
             zorder=10,
         )
 
@@ -535,11 +571,11 @@ class TimelineVisualEngine:
         self.theta_explainer_ax.text(
             0.02,
             0.74,
-            "θ0 Turbulence: calm -> choppy\n"
-            "θ1 Trend Bias: bearish -> bullish\n"
-            "θ2 Distortion: pattern regularity -> regime-shift irregularity\n"
-            "θ3 Fragmentation: cohesive structure -> broken/scattered structure\n"
-            "θ4 Velocity: slow evolution -> fast latent-state change",
+            "θ0 calm -> choppy\n"
+            "θ1 bearish -> bullish\n"
+            "θ2 pattern regularity -> regime-shift irregularity\n"
+            "θ3 cohesive structure -> scattered structure\n"
+            "θ4 slow evolution -> fast latent-state change",
             transform=self.theta_explainer_ax.transAxes,
             va="top",
             ha="left",
@@ -592,14 +628,14 @@ class TimelineVisualEngine:
         a = float(idx_info[2])
 
         t_mod = t.copy()
-        for i in range(4):
+        for i in range(5):
             t_mod[i] = float(np.clip(t_mod[i] * self.theta_control_scales[i], 0.0, 1.0))
 
         turbulence = float(t_mod[0])
         trend_bias = float(t_mod[1])
         distortion = float(t_mod[2])
         fragmentation = float(t_mod[3])
-        speed = float(t[4])
+        speed = float(t_mod[4])
 
         p = self.base_positions.copy()
 
@@ -626,12 +662,17 @@ class TimelineVisualEngine:
         drift_x = 0.08 * np.tanh(z[0] if len(z) > 0 else 0.0)
         drift_y = 0.06 * np.tanh(z[1] if len(z) > 1 else 0.0)
 
-        jitter_amp = 0.00025 + 0.0018 * turbulence
+        jitter_amp = 0.00030 + 0.00235 * turbulence
         jitter_scalar = np.sin(self.jitter_phase_seed + 0.055 * phase_idx).astype(np.float32)
         jitter = self.jitter_dir * (jitter_amp * jitter_scalar).reshape(-1, 1)
 
-        p[:, 0] = swirl_x + drift_x + jitter[:, 0]
-        p[:, 1] = swirl_y + drift_y + jitter[:, 1]
+        # Mild turbulence wobble to make high-turbulence states more visually obvious.
+        turbulence_wobble = 0.018 * turbulence * np.sin(2.3 * radius + 0.35 * phase + self.travel_seed)
+        wobble_x = turbulence_wobble * np.cos(angle + 1.1)
+        wobble_y = turbulence_wobble * np.sin(angle + 1.1)
+
+        p[:, 0] = swirl_x + drift_x + jitter[:, 0] + wobble_x
+        p[:, 1] = swirl_y + drift_y + jitter[:, 1] + wobble_y
 
         # Keep points inside viewport with soft compression (prevents drifting out of frame).
         p[:, 0] = 3.05 * np.tanh(p[:, 0] / 2.25)
@@ -664,7 +705,7 @@ class TimelineVisualEngine:
         color_field = np.clip(color_field, 0.0, 1.0)
 
         # Point sizes from speed+turbulence.
-        size_base = 6.0 + 9.0 * speed + 4.5 * turbulence + 2.2 * distortion
+        size_base = 6.0 + 9.0 * speed + 5.4 * turbulence + 2.2 * distortion
         frag_size_scale = 1.0 - 0.40 * (fragmentation ** 1.08)
         sizes = np.clip(size_base * (0.62 + 1.15 * (1.0 - depth_keep)) * frag_size_scale, 3.0, 30.0)
 
@@ -709,7 +750,7 @@ class TimelineVisualEngine:
             elapsed = self.play_elapsed_seconds
             remaining = max(0.0, self.predicted_total_seconds - elapsed)
             ts_idx = int(self.month_to_index[self.month_ptr])
-            current_date = datetime.fromtimestamp(int(self.data.timestamps[ts_idx]), tz=timezone.utc).strftime("%Y-%m-%d")
+            current_date = datetime.fromtimestamp(int(self.data.timestamps[ts_idx]), tz=timezone.utc).strftime("%Y-%m")
             self.hud_text.set_text(
                 f"elapsed   : {elapsed:6.1f}s\n"
                 f"pred_total: {self.predicted_total_seconds:6.1f}s\n"
@@ -737,7 +778,7 @@ class TimelineVisualEngine:
         self._render_month(float(val))
 
     def _on_theta_control_changed(self, _val: float) -> None:
-        for i, s in enumerate(self.theta_control_sliders[:4]):
+        for i, s in enumerate(self.theta_control_sliders[:5]):
             self.theta_control_scales[i] = float(np.clip(1.0 + float(s.val), 0.40, 1.60))
         self._set_keep_mask_for_month(self.current_month_float)
         self._render_month(self.current_month_float)
@@ -765,7 +806,9 @@ class TimelineVisualEngine:
         self.last_timer_ts = now
 
         _z, t, _fg, _idx = self._state_at_month(self.current_month_float)
-        dynamic_spin = 0.55 + 0.85 * float(t[4]) + 0.35 * float(t[2])
+        speed_scaled = float(np.clip(t[4] * self.theta_control_scales[4], 0.0, 1.0))
+        distortion_scaled = float(np.clip(t[2] * self.theta_control_scales[2], 0.0, 1.0))
+        dynamic_spin = 0.55 + 0.85 * speed_scaled + 0.35 * distortion_scaled
         # Always-positively advancing phase to avoid rotation direction flips.
         self.rotation_phase += dt * max(0.0288, (0.1008 + 0.1728 * dynamic_spin))
 
