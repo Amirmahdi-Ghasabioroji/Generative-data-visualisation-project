@@ -1,0 +1,102 @@
+{
+  "generated_at_utc": "2026-04-06T20:57:37+00:00",
+  "project_root": "D:\\QMUL\\AI project\\Generative-data-visualisation-project",
+  "validation_mode": "simple",
+  "models": [
+    "vae",
+    "pca",
+    "scraper_model",
+    "mapping_network",
+    "latent_visual_mapper"
+  ],
+  "setup_assets": {
+    "historical": {
+      "vae_latents": true,
+      "vae_weights": true,
+      "mapping_theta_pred": true,
+      "mapping_theta_targets": true,
+      "scraper_model": true,
+      "scraper_kmeans": true
+    },
+    "live": {
+      "latent_mapper_weights": true,
+      "latent_mapper_config": true
+    },
+    "historical_ready": true,
+    "live_ready": true
+  },
+  "vae": {
+    "latent_shape": [
+      49678,
+      16
+    ],
+    "latent_mean": 0.000947043183259666,
+    "latent_std": 0.3919967710971832,
+    "nan_count": 0,
+    "inf_count": 0,
+    "has_training_summary": true
+  },
+  "pca": {
+    "eval_rows": 8000,
+    "explained_variance_ratio": [
+      0.39205703139305115,
+      0.1847541779279709,
+      0.17632055282592773
+    ],
+    "cumulative_variance": 0.7531317472457886,
+    "reconstruction_mse": 0.0384397953748703
+  },
+  "scraper_model": {
+    "artifacts_ready": true,
+    "cluster_count": 12,
+    "cluster_entropy": 3.4007438408457147,
+    "cluster_entropy_normalized": 0.9486135043704408,
+    "runtime_rows": 120,
+    "runtime_ms_per_post": 2.487439166967912,
+    "runtime_cluster_utilization": 0.5833333333333334,
+    "thresholds": {
+      "relevance_high": 0.75,
+      "relevance_medium": 0.45,
+      "spam_threshold": 0.5,
+      "topic_threshold": 0.5,
+      "sentiment_neutral_band": 0.08
+    },
+    "metadata": {
+      "trained_at": "2026-03-17T20:35:06+00:00",
+      "num_posts": 65819,
+      "num_clusters": 12
+    }
+  },
+  "mapping_network": {
+    "rows": 49678,
+    "mse": 0.0091176712885499,
+    "mae": 0.05702890455722809,
+    "pred_range": [
+      4.102252933080308e-05,
+      0.9998627305030823
+    ],
+    "train_mse_summary": 0.0091176712885499
+  },
+  "latent_visual_mapper": {
+    "config": {
+      "pca_dim": 3,
+      "param_names": [
+        "motion_intensity",
+        "particle_density",
+        "distortion_strength",
+        "noise_scale",
+        "color_dynamics"
+      ]
+    },
+    "runtime_steps": 120,
+    "runtime_ms_per_step": 8.710790833477708,
+    "output_min": 0.09720183163881302,
+    "output_max": 0.9077224731445312
+  },
+  "summary": {
+    "pass": 19,
+    "warn": 0,
+    "fail": 0,
+    "elapsed_seconds": 3.3520121574401855
+  }
+}
