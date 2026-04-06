@@ -15,11 +15,13 @@ Controls:
   - Slider: jump to any timestamp/index
   - Play/Pause button: autoplay
   - Left/Right arrows: step one frame
+    - Left-side θ1-θ4 sliders: interactive visual modulation
 """
 
 from __future__ import annotations
 
 import argparse
+from functools import partial
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -178,6 +180,13 @@ class TimelineVisualEngine:
         self.theta_lines = []
         self.theta_markers = []
         self.theta_explainer_ax = None
+        self.theta_control_axes = []
+        self.theta_control_sliders = []
+        self.theta_control_reset_axes = []
+        self.theta_control_reset_buttons = []
+        self.theta_control_scales = np.ones(4, dtype=np.float32)
+        self.heatmap_legend_ax = None
+        self.heatmap_legend_text = None
 
         self.fear_greed_series = self._build_fear_greed_series()
         self.month_theta = self.data.theta[self.month_to_index, :5].astype(np.float32)
@@ -258,18 +267,18 @@ class TimelineVisualEngine:
         gs = self.fig.add_gridspec(
             nrows=1,
             ncols=2,
-            width_ratios=[4.65, 1.55],
-            left=0.04,
-            right=0.985,
-            top=0.95,
-            bottom=0.12,
+            width_ratios=[5.55, 1.15],
+            left=0.12,
+            right=0.962,
+            top=0.94,
+            bottom=0.20,
             wspace=0.06,
         )
 
         self.ax_main = self.fig.add_subplot(gs[0, 0])
-        theta_gs = gs[0, 1].subgridspec(6, 1, height_ratios=[1, 1, 1, 1, 1, 0.9], hspace=0.17)
+        theta_gs = gs[0, 1].subgridspec(6, 1, height_ratios=[1, 1, 1, 1, 1, 0.85], hspace=0.23)
 
-        self.ax_slider = self.fig.add_axes([0.08, 0.045, 0.74, 0.032], facecolor="#101935")
+        self.ax_slider = self.fig.add_axes([0.16, 0.045, 0.66, 0.032], facecolor="#101935")
         self.ax_button = self.fig.add_axes([0.835, 0.038, 0.13, 0.045])
 
         self.slider = Slider(
@@ -295,23 +304,78 @@ class TimelineVisualEngine:
         self.play_button.on_clicked(self._on_play_pause)
         self.fig.canvas.mpl_connect("key_press_event", self._on_key_press)
 
+        # Interactive theta controls (θ1-θ4) for user-driven visual modulation.
+        self.fig.text(
+            0.03,
+            0.905,
+            "Theta Controls",
+            color="#e7f0ff",
+            fontsize=8.8,
+            fontweight="bold",
+            ha="left",
+            va="center",
+        )
+        self.fig.text(
+            0.03,
+            0.882,
+            "(affects visuals only)",
+            color="#9fb8de",
+            fontsize=7.2,
+            ha="left",
+            va="center",
+        )
+
+        control_labels = ["θ1 Turb", "θ2 Trend", "θ3 Dist", "θ4 Frag"]
+        for i, label in enumerate(control_labels):
+            y = 0.81 - i * 0.10
+            ax_ctrl = self.fig.add_axes([0.03, y, 0.08, 0.026], facecolor="#0f1732")
+            s = Slider(
+                ax=ax_ctrl,
+                label=label,
+                valmin=-0.60,
+                valmax=0.60,
+                valinit=0.00,
+                color="#58c6ff",
+            )
+            ax_ctrl.set_facecolor("#0e1833")
+            for spine in ax_ctrl.spines.values():
+                spine.set_color("#34507d")
+            s.label.set_color("#dfefff")
+            s.label.set_fontsize(7.5)
+            s.valtext.set_color("#a8c9ef")
+            s.valtext.set_fontsize(7.5)
+            s.poly.set_facecolor("#58c6ff")
+            s.vline.set_color("#b5ecff")
+            s.on_changed(self._on_theta_control_changed)
+
+            ax_reset = self.fig.add_axes([0.043, y - 0.030, 0.055, 0.020])
+            btn = Button(ax_reset, "Reset", color="#1d2a49", hovercolor="#2d4476")
+            btn.label.set_color("#dcecff")
+            btn.label.set_fontsize(7.0)
+            btn.on_clicked(partial(self._on_theta_control_reset, i))
+
+            self.theta_control_axes.append(ax_ctrl)
+            self.theta_control_sliders.append(s)
+            self.theta_control_reset_axes.append(ax_reset)
+            self.theta_control_reset_buttons.append(btn)
+
         # Frequent timer ticks are used for interpolation; autoplay speed controls day cadence.
         self.timer = self.fig.canvas.new_timer(interval=self.timer_interval_ms)
         self.timer.add_callback(self._on_timer)
 
         # Main visual panel style.
         self.ax_main.set_facecolor("#02030a")
-        self.ax_main.set_xlim(-3.3, 3.3)
-        self.ax_main.set_ylim(-3.3, 3.3)
+        self.ax_main.set_xlim(-2.8, 2.8)
+        self.ax_main.set_ylim(-2.8, 2.8)
         self.ax_main.set_xticks([])
         self.ax_main.set_yticks([])
-        self.ax_main.set_title("Milkyway Latent Flight", color="#eaf0ff", fontsize=14, pad=8)
+        self.ax_main.set_title("Social + Market latent visualisation for BTC", color="#eaf0ff", fontsize=14, pad=8)
 
         # Static background and glow are drawn once and reused.
         bg = np.outer(np.linspace(0, 1, 220), np.ones(220))
         self.ax_main.imshow(
             bg,
-            extent=[-3.3, 3.3, -3.3, 3.3],
+            extent=[-2.8, 2.8, -2.8, 2.8],
             origin="lower",
             cmap=self.bg_cmap,
             alpha=0.80,
@@ -326,8 +390,8 @@ class TimelineVisualEngine:
 
         # Distant starfield layer.
         n_bg = 480
-        bg_x = self.rng.uniform(-3.3, 3.3, size=n_bg)
-        bg_y = self.rng.uniform(-3.3, 3.3, size=n_bg)
+        bg_x = self.rng.uniform(-2.8, 2.8, size=n_bg)
+        bg_y = self.rng.uniform(-2.8, 2.8, size=n_bg)
         bg_s = self.rng.uniform(2.0, 10.0, size=n_bg)
         bg_c = np.ones((n_bg, 4), dtype=np.float32)
         bg_c[:, :3] = np.array([0.90, 0.94, 1.0], dtype=np.float32)
@@ -345,8 +409,8 @@ class TimelineVisualEngine:
         )
 
         self.hud_text = self.ax_main.text(
-            -3.18,
-            3.12,
+            -2.68,
+            2.62,
             "",
             va="top",
             ha="left",
@@ -355,6 +419,51 @@ class TimelineVisualEngine:
             family="monospace",
             bbox={"facecolor": "#0a1224", "alpha": 0.76, "edgecolor": "#2a3f6d", "pad": 6},
             zorder=10,
+        )
+
+        # Bottom-right legend heatmap for red/green semantics.
+        self.heatmap_legend_ax = self.fig.add_axes([0.778, 0.126, 0.162, 0.020])
+        grad = np.linspace(0, 1, 256, dtype=np.float32).reshape(1, -1)
+        self.heatmap_legend_ax.imshow(
+            grad,
+            aspect="auto",
+            cmap="RdYlGn",
+            extent=[0.0, 1.0, 0.0, 1.0],
+        )
+        self.heatmap_legend_ax.set_facecolor("#0b1220")
+        self.heatmap_legend_ax.set_yticks([])
+        self.heatmap_legend_ax.set_xticks([])
+        self.heatmap_legend_ax.set_title("Colour meaning", color="#e8f2ff", fontsize=8, pad=2)
+        for spine in self.heatmap_legend_ax.spines.values():
+            spine.set_color("#334e78")
+
+        self.fig.text(
+            0.778,
+            0.115,
+            "Fear / Bearish",
+            color="#d2e6ff",
+            fontsize=6.8,
+            ha="left",
+            va="top",
+        )
+        self.fig.text(
+            0.94,
+            0.115,
+            "Greed / Bullish",
+            color="#d2e6ff",
+            fontsize=6.8,
+            ha="right",
+            va="top",
+        )
+
+        self.heatmap_legend_text = self.fig.text(
+            0.859,
+            0.099,
+            "Red = fear pressure    Green = greed pressure",
+            color="#c3d9f8",
+            fontsize=6.8,
+            ha="center",
+            va="top",
         )
 
         # Theta panels: show each signal over month-index time with a live cursor marker.
@@ -385,22 +494,22 @@ class TimelineVisualEngine:
                 s.set_color("#314a77")
 
             y = self.month_theta[:, i] if self.n_months > 0 else np.zeros(1, dtype=np.float32)
-            line, = ax.plot(x_month, y, color="#7fd1ff", lw=1.25, alpha=0.95)
-            marker, = ax.plot([0.0], [float(y[0]) if len(y) else 0.0], marker="o", ms=5.0, color="#ffd27c", lw=0)
+            line, = ax.plot(x_month, y, color="#7fd1ff", lw=1.10, alpha=0.95)
+            marker, = ax.plot([0.0], [float(y[0]) if len(y) else 0.0], marker="o", ms=4.0, color="#ffd27c", lw=0)
 
             ax.set_xlim(0, max(1, self.n_months - 1))
             ax.set_ylim(-0.02, 1.02)
             ax.grid(alpha=0.18, color="#7ca0d4", linewidth=0.55)
             ax.set_yticks([0.0, 0.5, 1.0])
-            ax.tick_params(axis="y", colors="#a9c3e8", labelsize=7)
-            ax.tick_params(axis="x", colors="#8fb2df", labelsize=7)
-            ax.set_ylabel(f"θ{i}", color="#b9cff0", fontsize=7, labelpad=2)
-            ax.set_title(f"{theta_titles[i]}  -  {theta_desc[i]}", color="#dbe9ff", fontsize=8, loc="left", pad=2)
+            ax.tick_params(axis="y", colors="#a9c3e8", labelsize=6.2)
+            ax.tick_params(axis="x", colors="#8fb2df", labelsize=6.2)
+            ax.set_ylabel(f"θ{i}", color="#b9cff0", fontsize=6.5, labelpad=2)
+            ax.set_title(f"{theta_titles[i]}  -  {theta_desc[i]}", color="#dbe9ff", fontsize=7.0, loc="left", pad=2)
 
             if i < 4:
                 ax.set_xticklabels([])
             else:
-                ax.set_xlabel("Month Index", color="#9cb9e0", fontsize=8)
+                ax.set_xlabel("Month Index", color="#9cb9e0", fontsize=7.0)
 
             self.theta_axes.append(ax)
             self.theta_lines.append(line)
@@ -420,7 +529,7 @@ class TimelineVisualEngine:
             va="top",
             ha="left",
             color="#e7f0ff",
-            fontsize=8.5,
+            fontsize=7.6,
             fontweight="bold",
         )
         self.theta_explainer_ax.text(
@@ -435,7 +544,7 @@ class TimelineVisualEngine:
             va="top",
             ha="left",
             color="#b7cdef",
-            fontsize=8,
+            fontsize=7.0,
             linespacing=1.35,
         )
 
@@ -460,9 +569,10 @@ class TimelineVisualEngine:
         return z, t, fear_greed, np.array([idx0, idx1, a], dtype=np.float32)
 
     def _compute_keep_indices(self, fragmentation: float, seed_value: int) -> np.ndarray:
-        # Wider sparsity range for a freer, less uniformly dense field.
-        keep_ratio = 0.20 + 0.70 * (1.0 - float(fragmentation))
-        keep_n = max(220, int(keep_ratio * self.base_n_particles))
+        # Slightly stronger sparsity response so high fragmentation is more obvious.
+        frag = float(np.clip(fragmentation, 0.0, 1.0))
+        keep_ratio = 0.14 + 0.78 * (1.0 - frag ** 0.90)
+        keep_n = max(180, int(keep_ratio * self.base_n_particles))
         local_rng = np.random.default_rng(int(seed_value) + 1729)
         return np.sort(local_rng.choice(self.base_n_particles, size=keep_n, replace=False)).astype(np.int32)
 
@@ -471,7 +581,7 @@ class TimelineVisualEngine:
         idx0 = int(idx_info[0])
         idx1 = int(idx_info[1])
         a = float(idx_info[2])
-        frag = float(t[3])
+        frag = float(np.clip(t[3] * self.theta_control_scales[3], 0.0, 1.0))
         seed_value = int(round((1.0 - a) * idx0 + a * idx1))
         self.current_keep_idx = self._compute_keep_indices(frag, seed_value)
 
@@ -481,9 +591,14 @@ class TimelineVisualEngine:
         idx1 = int(idx_info[1])
         a = float(idx_info[2])
 
-        turbulence = float(t[0])
-        distortion = float(t[2])
-        fragmentation = float(t[3])
+        t_mod = t.copy()
+        for i in range(4):
+            t_mod[i] = float(np.clip(t_mod[i] * self.theta_control_scales[i], 0.0, 1.0))
+
+        turbulence = float(t_mod[0])
+        trend_bias = float(t_mod[1])
+        distortion = float(t_mod[2])
+        fragmentation = float(t_mod[3])
         speed = float(t[4])
 
         p = self.base_positions.copy()
@@ -495,13 +610,15 @@ class TimelineVisualEngine:
         radius = np.linalg.norm(p, axis=1) + 1e-7
         angle = np.arctan2(p[:, 1], p[:, 0])
 
-        twist = 0.65 + 1.35 * distortion
+        # Distortion now has a clearer visual effect on spiral morphology.
+        twist = 0.62 + 1.80 * distortion
         # Direct angular term ensures clear one-direction rotation over time.
-        angular_velocity = 0.144 + 0.3456 * speed + 0.1152 * distortion
+        angular_velocity = 0.144 + 0.3456 * speed + 0.1800 * distortion
         # Static radial warp keeps texture without introducing directional wobble.
-        distortion_warp = 0.238 * distortion * np.sin(3.0 * angle + 0.75 * phase)
-        spiral_theta = angle + twist * radius + angular_velocity * phase + 0.05 * np.sin(2.0 * radius) + distortion_warp
-        breathing = 1.0 + 0.02 * np.sin(phase + 1.1 * radius)
+        distortion_warp = 0.34 * distortion * np.sin(3.0 * angle + 0.75 * phase)
+        radial_warp = 0.05 * distortion * np.sin(4.2 * radius + 0.55 * phase)
+        spiral_theta = angle + twist * radius + angular_velocity * phase + 0.05 * np.sin(2.0 * radius) + distortion_warp + radial_warp
+        breathing = 1.0 + (0.02 + 0.028 * distortion) * np.sin(phase + 1.1 * radius)
 
         swirl_x = breathing * radius * np.cos(spiral_theta)
         swirl_y = breathing * radius * np.sin(spiral_theta)
@@ -528,20 +645,27 @@ class TimelineVisualEngine:
 
         # Higher fragmentation visibly breaks the field apart by pushing points outward.
         unit_vec = p / np.clip(radius_keep.reshape(-1, 1), 1e-6, None)
-        frag_push = (fragmentation ** 1.15) * (0.07 + 0.294 * depth_keep)
+        frag_push = (fragmentation ** 1.08) * (0.09 + 0.38 * depth_keep)
         p += unit_vec * frag_push.reshape(-1, 1)
+
+        # Add a mild tangential shear so fragmented regimes look more visibly broken.
+        tangent_vec = np.column_stack([-unit_vec[:, 1], unit_vec[:, 0]])
+        frag_shear = (fragmentation ** 1.08) * (0.015 + 0.070 * depth_keep)
+        p += tangent_vec * (frag_shear * np.sin(0.16 * phase_idx + 6.5 * depth_keep)).reshape(-1, 1)
+
         p[:, 0] = 3.05 * np.tanh(p[:, 0] / 2.25)
         p[:, 1] = 3.05 * np.tanh(p[:, 1] / 2.25)
         radius_keep = np.linalg.norm(p, axis=1)
         depth_keep = np.clip(radius_keep / 3.2, 0.0, 1.0)
 
         # Color from radial field + latent/color axis influence.
-        color_field = 0.68 * fear_greed + 0.32 * np.clip(1.0 - depth_keep + 0.18 * np.sin(phase + 3.5 * depth_keep), 0.0, 1.0)
+        color_signal = np.clip(0.70 * fear_greed + 0.30 * trend_bias, 0.0, 1.0)
+        color_field = color_signal + 0.32 * (np.clip(1.0 - depth_keep + 0.18 * np.sin(phase + 3.5 * depth_keep), 0.0, 1.0) - 0.5)
         color_field = np.clip(color_field, 0.0, 1.0)
 
         # Point sizes from speed+turbulence.
-        size_base = 6.0 + 9.0 * speed + 4.5 * turbulence
-        frag_size_scale = 1.0 - 0.294 * (fragmentation ** 1.05)
+        size_base = 6.0 + 9.0 * speed + 4.5 * turbulence + 2.2 * distortion
+        frag_size_scale = 1.0 - 0.40 * (fragmentation ** 1.08)
         sizes = np.clip(size_base * (0.62 + 1.15 * (1.0 - depth_keep)) * frag_size_scale, 3.0, 30.0)
 
         colors = self.fg_cmap(color_field)
@@ -549,7 +673,7 @@ class TimelineVisualEngine:
         luminance = np.sum(rgb * np.array([0.2126, 0.7152, 0.0722], dtype=np.float32), axis=1, keepdims=True)
         saturation_boost = 1.25
         colors[:, :3] = np.clip(luminance + (rgb - luminance) * saturation_boost, 0.0, 1.0)
-        frag_alpha_scale = 1.0 - 0.336 * (fragmentation ** 1.1)
+        frag_alpha_scale = 1.0 - 0.46 * (fragmentation ** 1.12)
         colors[:, 3] = np.clip((0.30 + 0.62 * (1.0 - depth_keep)) * frag_alpha_scale, 0.12, 0.96)
 
         return p, sizes, colors
@@ -611,6 +735,16 @@ class TimelineVisualEngine:
             return
         self._set_keep_mask_for_month(float(val))
         self._render_month(float(val))
+
+    def _on_theta_control_changed(self, _val: float) -> None:
+        for i, s in enumerate(self.theta_control_sliders[:4]):
+            self.theta_control_scales[i] = float(np.clip(1.0 + float(s.val), 0.40, 1.60))
+        self._set_keep_mask_for_month(self.current_month_float)
+        self._render_month(self.current_month_float)
+
+    def _on_theta_control_reset(self, idx: int, _event) -> None:
+        if 0 <= idx < len(self.theta_control_sliders):
+            self.theta_control_sliders[idx].set_val(0.0)
 
     def _on_play_pause(self, _event) -> None:
         self.playing = not self.playing

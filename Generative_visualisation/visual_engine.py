@@ -192,7 +192,7 @@ class VisualEngine:
 
     def _build_interpretation_panel(self) -> str:
         return (
-            "Market interpretation\n"
+            "Market interpretation (what the market looks like)\n"
             "- Higher volatility -> larger latent shifts\n"
             "  -> motion + distortion typically increase\n"
             "- Sudden regime changes -> stronger noise/jitter\n"
@@ -247,13 +247,13 @@ class VisualEngine:
         color_dyn = float(params.get("color_dynamics", 0.5))
 
         return (
-            "Parameter meaning\n"
+            "Parameter meaning (renderer settings)\n"
             f"speed/motion : {motion:0.3f}\n"
             f"density       : {density:0.3f}\n"
             f"distortion    : {distortion:0.3f}\n"
             f"noise         : {noise:0.3f}\n"
             f"color dynamics: {color_dyn:0.3f}\n"
-            "color map      : dark->warm plasma gradient"
+            "color map      : Red->Green (bear->bull heatmap)\n"
         )
 
     def _apply_regime_style(self, regime_info: dict | None):
