@@ -156,7 +156,6 @@ class TimelineVisualEngine:
         self.month_ptr = 0
         self.current_month_float = 0.0
         self.last_timer_ts = None
-        self.rotation_phase = 0.0
 
         # Faster timeline progression while keeping cinematic pacing.
         self.months_per_second = 0.04032 * self.playback_speed
@@ -621,6 +620,26 @@ class TimelineVisualEngine:
         seed_value = int(round((1.0 - a) * idx0 + a * idx1))
         self.current_keep_idx = self._compute_keep_indices(frag, seed_value)
 
+    def _phase_at_month(self, month_float: float) -> float:
+        # Deterministic cumulative phase tied to month position for stable timeline scrubbing.
+        if self.n_months <= 1:
+            return 0.0
+
+        m = float(np.clip(month_float, 0.0, self.n_months - 1))
+        m0 = int(np.floor(m))
+        m1 = min(self.n_months - 1, m0 + 1)
+        a = m - m0
+
+        speed_series = np.clip(self.month_theta[:, 4] * self.theta_control_scales[4], 0.0, 1.0)
+        distortion_series = np.clip(self.month_theta[:, 2] * self.theta_control_scales[2], 0.0, 1.0)
+        dynamic_spin = 0.55 + 0.85 * speed_series + 0.35 * distortion_series
+        phase_rate = np.maximum(0.0288, 0.1008 + 0.1728 * dynamic_spin)
+        phase_per_month = phase_rate / max(self.months_per_second, 1e-6)
+
+        step_phase = 0.5 * (phase_per_month[:-1] + phase_per_month[1:])
+        phase_curve = np.concatenate(([0.0], np.cumsum(step_phase, dtype=np.float64)))
+        return float((1.0 - a) * phase_curve[m0] + a * phase_curve[m1])
+
     def _particle_state(self, month_float: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         z, t, fear_greed, idx_info = self._state_at_month(month_float)
         idx0 = int(idx_info[0])
@@ -641,7 +660,7 @@ class TimelineVisualEngine:
 
         # Center-based spiral transform.
         phase_idx = (1.0 - a) * idx0 + a * idx1
-        phase = self.rotation_phase
+        phase = self._phase_at_month(month_float)
 
         radius = np.linalg.norm(p, axis=1) + 1e-7
         angle = np.arctan2(p[:, 1], p[:, 0])
@@ -747,6 +766,7 @@ class TimelineVisualEngine:
 
         if self.hud_text is not None:
             progress_ratio = 0.0 if self.n_months <= 1 else (self.current_month_float / (self.n_months - 1))
+            self.play_elapsed_seconds = progress_ratio * self.predicted_total_seconds
             elapsed = self.play_elapsed_seconds
             remaining = max(0.0, self.predicted_total_seconds - elapsed)
             ts_idx = int(self.month_to_index[self.month_ptr])
@@ -805,18 +825,9 @@ class TimelineVisualEngine:
         dt = float(max(0.0, min(0.08, now - self.last_timer_ts)))
         self.last_timer_ts = now
 
-        _z, t, _fg, _idx = self._state_at_month(self.current_month_float)
-        speed_scaled = float(np.clip(t[4] * self.theta_control_scales[4], 0.0, 1.0))
-        distortion_scaled = float(np.clip(t[2] * self.theta_control_scales[2], 0.0, 1.0))
-        dynamic_spin = 0.55 + 0.85 * speed_scaled + 0.35 * distortion_scaled
-        # Always-positively advancing phase to avoid rotation direction flips.
-        self.rotation_phase += dt * max(0.0288, (0.1008 + 0.1728 * dynamic_spin))
-
         if not self.playing:
             self._render_month(self.current_month_float)
             return
-
-        self.play_elapsed_seconds += dt
 
         nxt_day = self.current_month_float + dt * self.months_per_second
         if nxt_day >= (self.n_months - 1):
