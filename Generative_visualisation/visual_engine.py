@@ -397,6 +397,7 @@ class VisualEngine:
         market_condition: dict | None = None,
     ):
         self._ensure_plot()
+        # Keep raw model values for HUD text; animation uses clipped target_params below.
         self.latest_model_params = {
             "motion_intensity": float(params.get("motion_intensity", 0.5)),
             "particle_density": float(params.get("particle_density", 0.5)),
@@ -450,6 +451,7 @@ class VisualEngine:
 
         self._apply_regime_style(self.latest_regime_info)
 
+        # Exponential smoothing avoids visual jumps when upstream updates are bursty.
         for key, target_value in self.target_params.items():
             self.current_params[key] = (
                 (1.0 - self.smoothing_alpha) * self.current_params[key]
@@ -463,6 +465,7 @@ class VisualEngine:
         color_dyn = self.current_params["color_dynamics"]
         trend_bias = float(np.clip(float(self.latest_market_condition.get("trend_bias", 0.5)), 0.0, 1.0))
 
+        # Density modulates particle budget while keeping a minimum visual baseline.
         n_particles = int(self.base_particles + density * 440)
         self._resize_particles(n_particles)
 

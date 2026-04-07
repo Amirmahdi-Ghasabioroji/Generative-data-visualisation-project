@@ -115,6 +115,7 @@ class UnsupervisedLatentMapper(keras.Model):
             z_hat, params = self(x_noisy, training=True)
             recon_loss = tf.reduce_mean(tf.square(x - z_hat))
 
+            # Penalize abrupt parameter jumps, normalized by how fast latent inputs move.
             diff_params = params[1:] - params[:-1]
             diff_input = x[1:] - x[:-1]
             input_speed = tf.norm(diff_input, axis=1, keepdims=True) + 1e-4
@@ -226,6 +227,7 @@ class StreamingLatentVisualMapper:
         if h.shape[0] == 0:
             return
 
+        # Spread initial centroids across bottleneck order for a stable cold start.
         order = np.argsort(h[:, 0])
         ordered = h[order]
         pick_idx = np.linspace(0, max(0, ordered.shape[0] - 1), self.n_regimes).astype(int)
@@ -436,6 +438,7 @@ class StreamingLatentVisualMapper:
         self.stream_buffer.append(z_t)
         self.step_count += 1
 
+        # Periodic light updates keep the mapper adapted to slow stream drift.
         if self.step_count % self.train_every == 0:
             self.partial_update(epochs=1, batch_size=32, verbose=0)
 

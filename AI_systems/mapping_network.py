@@ -79,6 +79,7 @@ def build_meaningful_theta_targets(
     uncertainty_u = _to_unit(0.6 * fear_greed_std + 0.4 * cluster_entropy)
     social_sparse_u = np.clip(social_empty_flag, 0.0, 1.0)
 
+    # Blend sentiment channels into a stable fear-greed color axis.
     # Signed sentiment axis: fear(0) -> neutral(0.5) -> greed(1)
     signed_sent = 0.55 * _to_unit(sentiment_label_net) + 0.45 * _to_unit(fear_greed_mean)
 
@@ -152,6 +153,7 @@ class MappingNetwork(keras.Model):
             theta_pred = self(z, training=True)
             mse = tf.reduce_mean(tf.keras.losses.mse(theta_target, theta_pred))
             mae = tf.reduce_mean(tf.keras.losses.mae(theta_target, theta_pred))
+            # Add MAE so training is less sensitive to occasional outlier targets.
             loss = 0.80 * mse + 0.20 * mae
 
         gradients = tape.gradient(loss, self.trainable_variables)

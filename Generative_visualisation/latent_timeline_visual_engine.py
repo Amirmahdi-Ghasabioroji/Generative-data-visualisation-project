@@ -109,12 +109,14 @@ def load_sequence_data(
         timestamps = timestamps.reshape(-1)
 
     if theta is None:
+        # Keep the viewer functional even if mapping predictions were not exported.
         theta = _fallback_theta_from_latent(latent)
     else:
         theta = np.asarray(theta, dtype=np.float32)
         if theta.ndim == 1:
             theta = theta.reshape(-1, 1)
         if theta.shape[1] < 5:
+            # Enforce the fixed 5-parameter theta contract expected by the renderer.
             pad = np.zeros((theta.shape[0], 5 - theta.shape[1]), dtype=np.float32)
             theta = np.hstack([theta, pad])
         theta = theta[:, :5]
@@ -592,6 +594,7 @@ class TimelineVisualEngine:
         idx0 = int(self.month_to_index[m0])
         idx1 = int(self.month_to_index[m1])
 
+        # Interpolate between adjacent month anchors for smooth scrubbing/autoplay.
         z0 = self.data.latent[idx0]
         z1 = self.data.latent[idx1]
         t0 = self.data.theta[idx0]

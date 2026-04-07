@@ -105,6 +105,7 @@ def load_npy(path: Path) -> np.ndarray | None:
 def sample_idx(n: int, max_rows: int, seed: int) -> np.ndarray:
     if n <= max_rows:
         return np.arange(n)
+    # Random sub-sampling keeps validation quick on large artifacts.
     rng = np.random.default_rng(seed)
     return np.sort(rng.choice(n, size=max_rows, replace=False))
 
@@ -388,6 +389,7 @@ def validate_mapping(report: dict[str, Any]) -> None:
         report["mapping_network"] = metrics
         return
 
+    # Tail-align to compare corresponding recent windows when lengths differ slightly.
     n = min(len(pred), len(tgt))
     pred = pred[-n:]
     tgt = tgt[-n:]
@@ -472,6 +474,7 @@ def validate_latent_mapper(report: dict[str, Any], max_steps: int) -> None:
     steps = min(max_steps, len(z_stream))
     t0 = time.perf_counter()
     out_ranges = []
+    # Stream-like loop checks both latency and output stability under repeated updates.
     for row in z_stream[-steps:]:
         params = mapper.process_stream_step(row)
         vals = np.asarray(list(params.values()), dtype=np.float32)
