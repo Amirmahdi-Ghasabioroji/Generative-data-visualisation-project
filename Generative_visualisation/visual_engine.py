@@ -212,7 +212,7 @@ class VisualEngine:
 
         regime_text = "R?/?: warming"
         if regime_id is not None and n_regimes > 0:
-            regime_text = f"R{int(regime_id)}/{n_regimes} conf={confidence:0.3f}"
+            regime_text = f"R{int(regime_id)}/{n_regimes} confidence={confidence:0.3f}"
 
         return (
             "Regime information\n"
