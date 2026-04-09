@@ -214,7 +214,7 @@ class LiveBTCVisualBridge:
         return np.hstack([market_matrix, social_block, cross]).astype(np.float64)
 
     def _blend_semantic_params(self, mapper_params: Dict[str, float], market_condition: Dict[str, float]) -> Dict[str, float]:
-        # Preserve mapper personality but anchor controls to interpretable market factors.
+        # Preserve mapper personality but expose theta-aligned semantic names.
         q = self._clip01(float(market_condition.get("quality", 0.0)))
         turbulence = self._clip01(float(market_condition.get("turbulence", 0.5)))
         trend_bias = self._clip01(float(market_condition.get("trend_bias", 0.5)))
@@ -225,13 +225,22 @@ class LiveBTCVisualBridge:
         # Increase semantic influence as data quality becomes reliable.
         w_sem = 0.25 + 0.50 * q
 
-        p = {k: self._clip01(float(mapper_params.get(k, 0.5))) for k in mapper_params.keys()}
-        out = dict(p)
-        out["motion_intensity"] = self._clip01((1.0 - w_sem) * p["motion_intensity"] + w_sem * (0.52 * velocity + 0.48 * turbulence))
-        out["particle_density"] = self._clip01((1.0 - w_sem) * p["particle_density"] + w_sem * (1.0 - 0.72 * fragmentation))
-        out["distortion_strength"] = self._clip01((1.0 - w_sem) * p["distortion_strength"] + w_sem * distortion)
-        out["noise_scale"] = self._clip01((1.0 - w_sem) * p["noise_scale"] + w_sem * (0.62 * fragmentation + 0.38 * turbulence))
-        out["color_dynamics"] = self._clip01((1.0 - w_sem) * p["color_dynamics"] + w_sem * (0.56 * abs(trend_bias - 0.5) * 2.0 + 0.44 * velocity))
+        # Mapper artifacts still emit legacy renderer keys; map them to semantic priors.
+        p_sem = {
+            "turbulence": self._clip01(float(mapper_params.get("turbulence", mapper_params.get("motion_intensity", 0.5)))),
+            "trend_bias": self._clip01(float(mapper_params.get("trend_bias", mapper_params.get("color_dynamics", 0.5)))),
+            "distortion": self._clip01(float(mapper_params.get("distortion", mapper_params.get("distortion_strength", 0.5)))),
+            "fragmentation": self._clip01(float(mapper_params.get("fragmentation", mapper_params.get("noise_scale", 0.5)))),
+            "velocity": self._clip01(float(mapper_params.get("velocity", mapper_params.get("particle_density", 0.5)))),
+        }
+
+        out = {
+            "turbulence": self._clip01((1.0 - w_sem) * p_sem["turbulence"] + w_sem * turbulence),
+            "trend_bias": self._clip01((1.0 - w_sem) * p_sem["trend_bias"] + w_sem * trend_bias),
+            "distortion": self._clip01((1.0 - w_sem) * p_sem["distortion"] + w_sem * distortion),
+            "fragmentation": self._clip01((1.0 - w_sem) * p_sem["fragmentation"] + w_sem * fragmentation),
+            "velocity": self._clip01((1.0 - w_sem) * p_sem["velocity"] + w_sem * velocity),
+        }
         return out
 
     def _enrich_live_latent(self, z_t: np.ndarray, market_condition: Dict[str, float]) -> np.ndarray:

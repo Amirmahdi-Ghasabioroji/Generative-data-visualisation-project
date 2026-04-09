@@ -1,12 +1,19 @@
 """
 Simple real-time visual engine driven by generative parameter controls.
 
-Expected parameter keys (0..1):
-- motion_intensity
-- particle_density
-- distortion_strength
-- noise_scale
-- color_dynamics
+Expected parameter keys (0..1), aligned with historical theta semantics:
+- turbulence
+- trend_bias
+- distortion
+- fragmentation
+- velocity
+
+Legacy live keys are still accepted for compatibility:
+- motion_intensity -> turbulence
+- color_dynamics -> trend_bias
+- distortion_strength -> distortion
+- noise_scale -> fragmentation
+- particle_density -> velocity
 """
 
 from __future__ import annotations
@@ -49,11 +56,11 @@ class VisualEngine:
         self.smoothing_alpha = 0.07
         self.tick_interval_ms = 16
         self.current_params = {
-            "motion_intensity": 0.5,
-            "particle_density": 0.5,
-            "distortion_strength": 0.5,
-            "noise_scale": 0.5,
-            "color_dynamics": 0.5,
+            "turbulence": 0.5,
+            "trend_bias": 0.5,
+            "distortion": 0.5,
+            "fragmentation": 0.5,
+            "velocity": 0.5,
         }
         self.latest_model_params = dict(self.current_params)
         self.target_params = dict(self.current_params)
@@ -207,15 +214,14 @@ class VisualEngine:
         return (
             "Market interpretation (what the market looks like)\n"
             "- Higher volatility -> larger latent shifts\n"
-            "  -> motion + distortion typically increase\n"
+            "  -> turbulence + distortion typically increase\n"
             "- Sudden regime changes -> stronger noise/jitter\n"
             "- Stable periods -> smoother flow + slower drift\n"
             "- Velocity/speed shows how fast the latent state\n"
             "  is changing right now (tempo of regime movement)\n"
             "- PCA cluster drift reflects regime migration\n"
             "  (trend, consolidation, shock transitions)\n"
-            "- Color dynamics rises when latent trajectory\n"
-            "  changes direction/speed more frequently"
+            "- Trend bias drives bearish<->bullish color drift"
         )
 
     def _build_regime_panel(self) -> str:
@@ -281,20 +287,31 @@ class VisualEngine:
             f"err streak  : {social_error_streak:d}"
         )
 
+    @staticmethod
+    def _normalize_live_params(params: dict[str, float]) -> dict[str, float]:
+        # Accept both canonical semantic names and legacy renderer names.
+        return {
+            "turbulence": float(np.clip(params.get("turbulence", params.get("motion_intensity", 0.5)), 0.0, 1.0)),
+            "trend_bias": float(np.clip(params.get("trend_bias", params.get("color_dynamics", 0.5)), 0.0, 1.0)),
+            "distortion": float(np.clip(params.get("distortion", params.get("distortion_strength", 0.5)), 0.0, 1.0)),
+            "fragmentation": float(np.clip(params.get("fragmentation", params.get("noise_scale", 0.5)), 0.0, 1.0)),
+            "velocity": float(np.clip(params.get("velocity", params.get("particle_density", 0.5)), 0.0, 1.0)),
+        }
+
     def _build_info_panel(self, params: dict[str, float]) -> str:
-        motion = float(params.get("motion_intensity", 0.5))
-        density = float(params.get("particle_density", 0.5))
-        distortion = float(params.get("distortion_strength", 0.5))
-        noise = float(params.get("noise_scale", 0.5))
-        color_dyn = float(params.get("color_dynamics", 0.5))
+        turbulence = float(params.get("turbulence", 0.5))
+        trend_bias = float(params.get("trend_bias", 0.5))
+        distortion = float(params.get("distortion", 0.5))
+        fragmentation = float(params.get("fragmentation", 0.5))
+        velocity = float(params.get("velocity", 0.5))
 
         return (
-            "Parameter meaning (renderer settings)\n"
-            f"speed/motion : {motion:0.3f}\n"
-            f"density       : {density:0.3f}\n"
-            f"distortion    : {distortion:0.3f}\n"
-            f"noise         : {noise:0.3f}\n"
-            f"color dynamics: {color_dyn:0.3f}\n"
+            "Live theta-aligned parameters\n"
+            f"turbulence   : {turbulence:0.3f}\n"
+            f"trend bias   : {trend_bias:0.3f}\n"
+            f"distortion   : {distortion:0.3f}\n"
+            f"fragmentation: {fragmentation:0.3f}\n"
+            f"velocity     : {velocity:0.3f}\n"
             "color map      : Red->Green (bear->bull heatmap)\n"
         )
 
@@ -439,14 +456,9 @@ class VisualEngine:
         market_condition: dict | None = None,
     ):
         self._ensure_plot()
+        normalized_params = self._normalize_live_params(params)
         # Keep raw model values for HUD text; animation uses clipped target_params below.
-        self.latest_model_params = {
-            "motion_intensity": float(params.get("motion_intensity", 0.5)),
-            "particle_density": float(params.get("particle_density", 0.5)),
-            "distortion_strength": float(params.get("distortion_strength", 0.5)),
-            "noise_scale": float(params.get("noise_scale", 0.5)),
-            "color_dynamics": float(params.get("color_dynamics", 0.5)),
-        }
+        self.latest_model_params = dict(normalized_params)
         if regime_info is not None:
             self.latest_regime_info = {
                 "regime_id": regime_info.get("regime_id"),
@@ -475,13 +487,7 @@ class VisualEngine:
             self.latest_market_condition = current
         self._apply_regime_style(self.latest_regime_info)
 
-        self.target_params = {
-            "motion_intensity": float(np.clip(params.get("motion_intensity", 0.5), 0.0, 1.0)),
-            "particle_density": float(np.clip(params.get("particle_density", 0.5), 0.0, 1.0)),
-            "distortion_strength": float(np.clip(params.get("distortion_strength", 0.5), 0.0, 1.0)),
-            "noise_scale": float(np.clip(params.get("noise_scale", 0.5), 0.0, 1.0)),
-            "color_dynamics": float(np.clip(params.get("color_dynamics", 0.5), 0.0, 1.0)),
-        }
+        self.target_params = dict(normalized_params)
 
         if self.info_text is not None:
             self.info_text.set_text(self._build_info_panel(self.latest_model_params))
@@ -513,12 +519,18 @@ class VisualEngine:
                 + self.smoothing_alpha * target_value
             )
 
-        motion = self.current_params["motion_intensity"]
-        density = self.current_params["particle_density"]
-        distortion = self.current_params["distortion_strength"]
-        noise = self.current_params["noise_scale"]
-        color_dyn = self.current_params["color_dynamics"]
-        trend_bias = float(np.clip(float(self.latest_market_condition.get("trend_bias", 0.5)), 0.0, 1.0))
+        turbulence = self.current_params["turbulence"]
+        trend_bias = self.current_params["trend_bias"]
+        distortion = self.current_params["distortion"]
+        fragmentation = self.current_params["fragmentation"]
+        velocity = self.current_params["velocity"]
+
+        # Derived renderer controls preserve existing visual behavior while
+        # keeping externally visible parameters theta-aligned.
+        motion = float(np.clip(0.52 * velocity + 0.48 * turbulence, 0.0, 1.0))
+        density = float(np.clip(1.0 - 0.72 * fragmentation, 0.0, 1.0))
+        noise = float(np.clip(0.62 * fragmentation + 0.38 * turbulence, 0.0, 1.0))
+        color_dyn = float(np.clip(0.56 * abs(trend_bias - 0.5) * 2.0 + 0.44 * velocity, 0.0, 1.0))
 
         # Density modulates particle budget while keeping a minimum visual baseline.
         n_particles = int(self.base_particles + density * 440)
