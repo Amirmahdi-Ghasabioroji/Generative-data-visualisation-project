@@ -24,7 +24,7 @@ In practical terms, the system is designed to:
 
 ### 1) Data acquisition and preprocessing
 - Historical Binance BTC candles (30m shards) via `Data_Pipeline/BTC_datapipeline.py`.
-- Bluesky static snapshot pipeline via `Data_Pipeline/Static_Bluesky.py`.
+- Live Bluesky social poller + scoring + rolling persistence via `Data_Pipeline/Static_Bluesky.py`.
 - Longer-range Bluesky historical scraper with AI enrichment via `AI_systems/bitcoin_blusky_pipeline.py`.
 - Real-time Binance stream ingestion via `Data_Pipeline/Real_time_Crypto.py`.
 
@@ -132,7 +132,14 @@ python Generative_visualisation/live_btc_visual_pipeline.py
 ```bash
 python Generative_visualisation/live_btc_visual_pipeline.py
 ```
-Flow: Binance stream -> feature extraction -> PCA(3D) -> streaming latent mapper -> generative renderer.
+Flow: Binance stream + Bluesky social poller -> combined market+social feature matrix -> PCA(3D) -> streaming latent mapper -> generative renderer.
+
+Live setup details:
+- Social loop polls Bluesky on interval and computes social factors (`turbulence`, `trend_bias`, `distortion`, `fragmentation`, `velocity`, `quality`).
+- Market and social conditions are blended with a quality-scaled weight (`SOCIAL_BLEND_MAX_WEIGHT` cap).
+- PCA receives the combined matrix (`market features + social block + social-market cross terms`).
+- Social posts are persisted to `binance_realtime/bluesky_live_posts.json` as a strict rolling window (300 posts).
+- Live mapper state is isolated to `AI_systems/latent_mapper_artifacts_live_social/`.
 
 ### Live PCA-only mode
 ```bash
@@ -188,6 +195,11 @@ python Generative_visualisation/latent_timeline_visual_engine.py \
 ### Online mapper artifacts
 - `AI_systems/latent_mapper_artifacts/latent_mapper.weights.h5`
 - `AI_systems/latent_mapper_artifacts/latent_mapper_config.json`
+- `AI_systems/latent_mapper_artifacts_live_social/latent_mapper.weights.h5`
+- `AI_systems/latent_mapper_artifacts_live_social/latent_mapper_config.json`
+
+### Live social runtime output
+- `binance_realtime/bluesky_live_posts.json`
 
 ### Validation output
 - `AI_systems/model_validation_report.json`
