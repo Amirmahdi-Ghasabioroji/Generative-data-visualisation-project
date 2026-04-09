@@ -150,7 +150,8 @@ class TimelineVisualEngine:
         self.n = len(data.timestamps)
         self.playing = autoplay
         self.autoplay_fps = float(max(1.0, autoplay_fps))
-        self.timer_interval_ms = int(1000.0 / max(24.0, min(60.0, self.autoplay_fps * 2.0)))
+        # Run timer slightly faster for smoother UI interaction and autoplay cadence.
+        self.timer_interval_ms = int(1000.0 / max(30.0, min(72.0, self.autoplay_fps * 3.0)))
         self.playback_speed = float(max(0.25, min(3.0, self.autoplay_fps / 10.0)))
 
         self.month_to_index = self._build_month_index(self.data.timestamps)
@@ -186,6 +187,11 @@ class TimelineVisualEngine:
         self.theta_control_reset_axes = []
         self.theta_control_reset_buttons = []
         self.theta_control_scales = np.ones(5, dtype=np.float32)
+        self._pending_slider_month: float | None = None
+        self._pending_theta_refresh = False
+        self._last_interaction_render_ts = 0.0
+        # Limit heavy recompute during drag to keep UI controls responsive.
+        self._interaction_render_min_dt = 1.0 / 45.0
         self.theta_market_box_ax = None
         self.heatmap_legend_ax = None
         self.heatmap_legend_text = None
@@ -219,10 +225,12 @@ class TimelineVisualEngine:
         self._set_keep_mask_for_month(0.0)
         self._render_month(0, immediate=True)
 
+        # Keep timer active even when paused so queued slider updates are flushed smoothly.
+        self.last_timer_ts = time.perf_counter()
+        self.timer.start()
+
         if self.playing:
             self.play_button.label.set_text("Pause")
-            self.last_timer_ts = time.perf_counter()
-            self.timer.start()
 
     def _build_month_index(self, timestamps: np.ndarray) -> np.ndarray:
         dt = [datetime.fromtimestamp(int(ts), tz=timezone.utc) for ts in timestamps]
@@ -278,7 +286,7 @@ class TimelineVisualEngine:
         )
 
         self.ax_main = self.fig.add_subplot(gs[0, 0])
-        theta_gs = gs[0, 1].subgridspec(6, 1, height_ratios=[1, 1, 1, 1, 1, 0.85], hspace=0.23)
+        theta_gs = gs[0, 1].subgridspec(6, 1, height_ratios=[1, 1, 1, 1, 1, 1.12], hspace=0.23)
 
         self.ax_slider = self.fig.add_axes([0.16, 0.045, 0.66, 0.032], facecolor="#101935")
         self.ax_button = self.fig.add_axes([0.835, 0.038, 0.13, 0.045])
@@ -305,6 +313,7 @@ class TimelineVisualEngine:
         self.slider.on_changed(self._on_slider)
         self.play_button.on_clicked(self._on_play_pause)
         self.fig.canvas.mpl_connect("key_press_event", self._on_key_press)
+        self.fig.canvas.mpl_connect("button_release_event", self._on_mouse_release)
 
         # Interactive theta controls (θ0-θ4) for user-driven visual modulation.
         self.fig.text(
@@ -797,14 +806,42 @@ class TimelineVisualEngine:
     def _on_slider(self, val: float) -> None:
         if self._syncing_slider:
             return
-        self._set_keep_mask_for_month(float(val))
-        self._render_month(float(val))
+        self._pending_slider_month = float(val)
 
     def _on_theta_control_changed(self, _val: float) -> None:
         for i, s in enumerate(self.theta_control_sliders[:5]):
             self.theta_control_scales[i] = float(np.clip(1.0 + float(s.val), 0.40, 1.60))
-        self._set_keep_mask_for_month(self.current_month_float)
-        self._render_month(self.current_month_float)
+        self._pending_theta_refresh = True
+
+    def _flush_interaction_updates(self, force: bool) -> None:
+        now = time.perf_counter()
+        if not force and (now - self._last_interaction_render_ts) < self._interaction_render_min_dt:
+            return
+
+        did_render = False
+
+        if self._pending_slider_month is not None:
+            month = float(self._pending_slider_month)
+            self._pending_slider_month = None
+            self._set_keep_mask_for_month(month)
+            self._render_month(month)
+            did_render = True
+        elif self._pending_theta_refresh:
+            self._pending_theta_refresh = False
+            self._set_keep_mask_for_month(self.current_month_float)
+            self._render_month(self.current_month_float)
+            did_render = True
+
+        if did_render:
+            self._last_interaction_render_ts = now
+
+    def _on_mouse_release(self, event) -> None:
+        if event is None:
+            return
+
+        slider_axes = [self.ax_slider] + list(self.theta_control_axes)
+        if event.inaxes in slider_axes:
+            self._flush_interaction_updates(force=True)
 
     def _on_theta_control_reset(self, idx: int, _event) -> None:
         if 0 <= idx < len(self.theta_control_sliders):
@@ -816,8 +853,6 @@ class TimelineVisualEngine:
         if self.playing:
             self.last_timer_ts = time.perf_counter()
             self.timer.start()
-        else:
-            self.timer.stop()
 
     def _on_timer(self) -> None:
         now = time.perf_counter()
@@ -828,8 +863,10 @@ class TimelineVisualEngine:
         dt = float(max(0.0, min(0.08, now - self.last_timer_ts)))
         self.last_timer_ts = now
 
+        # Flush queued slider updates on timer ticks to keep drag interactions smooth.
+        self._flush_interaction_updates(force=False)
+
         if not self.playing:
-            self._render_month(self.current_month_float)
             return
 
         nxt_day = self.current_month_float + dt * self.months_per_second
