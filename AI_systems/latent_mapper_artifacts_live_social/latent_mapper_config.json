@@ -1,0 +1,59 @@
+{
+  "pca_dim": 3,
+  "param_names": [
+    "motion_intensity",
+    "particle_density",
+    "distortion_strength",
+    "noise_scale",
+    "color_dynamics"
+  ],
+  "n_regimes": 3,
+  "auto_config": {
+    "activation": "tanh",
+    "optimizer_name": "adamw",
+    "learning_rate": 0.0008,
+    "l2_strength": 0.001,
+    "hidden_units": [
+      32,
+      24
+    ],
+    "bottleneck_dim": 2
+  },
+  "regime_state": {
+    "centroids": [
+      [
+        -0.682154655456543,
+        -0.271230012178421
+      ],
+      [
+        -0.2975120544433594,
+        0.15954889357089996
+      ],
+      [
+        0.8793413639068604,
+        0.3517089784145355
+      ]
+    ],
+    "counts": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "latest_regime_id": null,
+    "latest_regime_confidence": 0.0,
+    "smoothed_regime_confidence": 0.0
+  },
+  "z_norm_state": {
+    "mean": [
+      0.013581004925072193,
+      -1.3195452690124512,
+      0.8744195103645325
+    ],
+    "var": [
+      0.1836259514093399,
+      0.41561228036880493,
+      0.5570701956748962
+    ],
+    "count": 10
+  }
+}

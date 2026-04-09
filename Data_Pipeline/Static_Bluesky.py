@@ -1,574 +1,482 @@
 """
-Bluesky Static Data Pipeline
-Purpose: Fetch a batch snapshot from Bluesky and convert it into
-AI-ready arrays for PCA/VAE workflows.
-Stack: atproto + numpy + sentence-transformers + scikit-learn
-Mode: Static/batch (runs on demand, not real-time streaming)
+Live Bluesky social polling utilities.
 
-Dependencies:
-    pip install atproto numpy sentence-transformers scikit-learn
+This module contains the live social ingestion path used by
+Generative_visualisation/live_btc_visual_pipeline.py.
+
 """
 
-import re
-import time
-import unicodedata
-import csv
+from __future__ import annotations
+
 import json
-import getpass
+import os
+import re
+import sys
+import time
+from collections import Counter, deque
 from datetime import datetime
 from pathlib import Path
+from typing import Deque, Dict, Optional
 
 import numpy as np
 from atproto import Client
-from sentence_transformers import SentenceTransformer
-from sklearn.preprocessing import StandardScaler
-import os
-import sys
-from sklearn.cluster import KMeans
-from sklearn.metrics import silhouette_score
 
-# ─────────────────────────────────────────────────────────────
-# STAGE 1: ENVIRONMENT SETUP
-# What it does: Prepares imports/path/console behavior so this
-# script can run directly from the project workspace.
-# Why it matters: Keeps module imports stable and avoids common
-# Windows console encoding issues during output logging.
-# ─────────────────────────────────────────────────────────────
 
 # Ensure workspace root is on sys.path so AI_systems can be imported when
-# running this script directly.
+# running this module directly.
 ROOT = os.path.dirname(os.path.dirname(__file__))
 if ROOT not in sys.path:
     sys.path.append(ROOT)
 
-# Attempt to force UTF-8 stdout on Windows to avoid UnicodeEncodeError
+
+# Attempt to force UTF-8 stdout on Windows to avoid UnicodeEncodeError.
 try:
     sys.stdout.reconfigure(encoding="utf-8")
 except Exception:
     pass
 
-from AI_systems.pca_model import PCA
 
-# ─────────────────────────────────────────────────────────────
-# STAGE 2: AUTHENTICATION + INGESTION
-# What it does: Opens a Bluesky session, searches posts, and
-# normalizes API records into a consistent internal schema.
-# Why it matters: Gives downstream feature/PCA stages one clean
-# list-of-dicts format independent of API response shape.
-# ─────────────────────────────────────────────────────────────
+try:
+    from AI_systems.bitcoin_blusky_pipeline import (
+        AIInferenceEngine,
+        _extract_topic_tags as _ai_extract_topic_tags,
+        _fear_greed_score as _ai_fear_greed_score,
+        _is_probable_spam as _ai_is_probable_spam,
+        _normalize_text as _ai_normalize_text,
+        _relevance_score as _ai_relevance_score,
+        _sentiment_from_score as _ai_sentiment_from_score,
+    )
+except Exception:
+    AIInferenceEngine = None
+
+    def _ai_normalize_text(text: str) -> str:
+        return re.sub(r"\s+", " ", (text or "").strip().lower())
+
+    def _ai_sentiment_from_score(score: float) -> str:
+        if score >= 0.15:
+            return "greed"
+        if score <= -0.15:
+            return "fear"
+        return "neutral"
+
+    def _ai_fear_greed_score(text: str) -> tuple[float, str]:
+        return 0.0, "neutral"
+
+    def _ai_extract_topic_tags(text: str) -> list[str]:
+        return []
+
+    def _ai_relevance_score(text: str, query_term: str) -> tuple[float, str]:
+        return 0.5, "medium"
+
+    def _ai_is_probable_spam(text: str) -> bool:
+        return False
+
+
+def _clip01(v: float) -> float:
+    return float(np.clip(v, 0.0, 1.0))
+
+
+def _get_any(obj, names, default=None):
+    if obj is None:
+        return default
+    if isinstance(obj, dict):
+        for name in names:
+            if name in obj:
+                return obj[name]
+    for name in names:
+        value = getattr(obj, name, None)
+        if value is not None:
+            return value
+    return default
+
 
 def fetch_bluesky_posts(
     query: str,
     limit: int = 300,
-    handle: str = None,
-    password: str = None,
+    handle: str | None = None,
+    password: str | None = None,
     sort: str = "latest",
     exclude_uris: set[str] | None = None,
 ) -> list[dict]:
+    """Fetch posts from Bluesky and return normalized post dictionaries."""
+
     client = Client()
 
-    # Allow credentials to be supplied via environment variables so the
-    # pipeline can run non-interactively.
     handle = (handle or os.getenv("BLUESKY_HANDLE") or "").strip()
     password = (password or os.getenv("BLUESKY_APP_PASSWORD") or "").strip()
 
-    # Support users passing handles like @name.bsky.social
     if handle.startswith("@"):
         handle = handle[1:]
 
     if handle and password:
         try:
             client.login(handle, password)
-            print(f"[✓] Authenticated as {handle}")
         except Exception as e:
-            print(f"[!] Login failed for {handle}: {e}")
+            print(f"[SOCIAL] login failed for {handle}: {e}")
             return []
-    elif handle and not password:
-        print("[!] BLUESKY_HANDLE is set but BLUESKY_APP_PASSWORD is missing.")
-        print("    Set both variables in the same terminal session.")
-        return []
-    elif password and not handle:
-        print("[!] BLUESKY_APP_PASSWORD is set but BLUESKY_HANDLE is missing.")
-        print("    Set both variables in the same terminal session.")
-        return []
-    else:
-        print("[i] Public (unauthenticated) access")
 
-    def _get_any(obj, names, default=None):
-        if obj is None:
-            return default
-        # dict-style
-        if isinstance(obj, dict):
-            for n in names:
-                if n in obj:
-                    return obj[n]
-        # attribute-style
-        for n in names:
-            val = getattr(obj, n, None)
-            if val is not None:
-                return val
-        return default
+    posts: list[dict] = []
+    cursor = None
 
-    posts, cursor, fetched = [], None, 0
-    skipped_existing = 0
-
-    while fetched < limit:
+    while len(posts) < limit:
         try:
             response = client.app.bsky.feed.search_posts(
                 params={
                     "q": query,
-                    "limit": min(100, limit - fetched),
+                    "limit": min(100, limit - len(posts)),
                     "cursor": cursor,
                     "sort": sort,
                 }
             )
 
-            # If the API returned an error-like response (e.g. success=False), handle it now
             resp_success = _get_any(response, ["success", "ok"], None)
-            resp_status = _get_any(response, ["status_code", "status"], None)
             if resp_success is False:
-                if resp_status == 401 or "AuthMissing" in str(response):
-                    print("[!] Bluesky API returned 401 (AuthMissing). This endpoint requires authentication.")
-                    print("    Provide BLUESKY_HANDLE and BLUESKY_APP_PASSWORD (app password),")
-                    print("    or call fetch_bluesky_posts(handle=..., password=...).")
-                    return []
-                print(f"[!] Bluesky API error: status={resp_status} response={response}")
-                return []
+                return posts
 
-            # response may be an object or a dict depending on client version
             batch = _get_any(response, ["posts", "data", "results"], []) or []
-
             if not batch:
-                # debug-print the raw response to help diagnose API shape issues
-                print("[i] Empty batch returned from API; response repr:")
-                try:
-                    print(response)
-                except Exception:
-                    pass
                 break
 
             for post in batch:
                 record = _get_any(post, ["record", "value", "post", "payload"], {}) or {}
                 text = _get_any(record, ["text", "content", "body"], "") or ""
-                created_at = _get_any(record, ["created_at", "createdAt", "time"], "") or ""
+                if not text.strip():
+                    continue
 
+                created_at = _get_any(record, ["created_at", "createdAt", "time"], "") or ""
                 like_count = _get_any(post, ["like_count", "likeCount", "likes"], 0) or 0
                 repost_count = _get_any(post, ["repost_count", "repostCount", "reposts"], 0) or 0
                 reply_count = _get_any(post, ["reply_count", "replyCount", "replies"], 0) or 0
-
                 uri = _get_any(post, ["uri", "post_uri", "id"], "") or ""
+
                 if exclude_uris and uri and uri in exclude_uris:
-                    skipped_existing += 1
                     continue
 
-                posts.append({
-                    "text":         text,
-                    "created_at":   created_at,
-                    "like_count":   like_count,
-                    "repost_count": repost_count,
-                    "reply_count":  reply_count,
-                    "uri":          uri,
-                    "has_image":    _has_image(record),
-                    "has_link":     _has_link(record),
-                    "char_count":   len(text),
-                    "word_count":   len(text.split()),
-                })
+                posts.append(
+                    {
+                        "text": text,
+                        "created_at": created_at,
+                        "like_count": int(float(like_count or 0)),
+                        "repost_count": int(float(repost_count or 0)),
+                        "reply_count": int(float(reply_count or 0)),
+                        "uri": uri,
+                    }
+                )
 
-            fetched = len(posts)
             cursor = _get_any(response, ["cursor", "next", "cursor_str"], None)
-            print(f"  [{fetched}/{limit}] fetched …")
-
-            if not cursor or fetched >= limit:
+            if not cursor:
                 break
 
-            time.sleep(0.5)
+            # Light pacing to reduce API pressure.
+            time.sleep(0.25)
 
         except Exception as e:
-            print(f"[!] fetch_bluesky_posts error: {e}")
+            print(f"[SOCIAL] fetch error: {e}")
             break
-
-    if exclude_uris:
-        print(f"[i] Skipped {skipped_existing} posts already present in previous dataset.")
 
     return posts[:limit]
 
 
-def _has_image(record) -> bool:
-    embed = getattr(record, "embed", None)
-    if embed is None:
-        return False
-    embed_type = getattr(embed, "$type", "") or getattr(type(embed), "__name__", "")
-    return "image" in str(embed_type).lower()
+class LiveSocialSentimentPoller:
+    """Poll Bluesky on an interval and maintain rolling social factors for live blending."""
 
+    MAX_PERSISTED_POSTS = 300
 
-def _has_link(record) -> bool:
-    for facet in (getattr(record, "facets", None) or []):
-        for feature in getattr(facet, "features", []):
-            if any(k in getattr(type(feature), "__name__", "").lower() for k in ("link", "uri")):
-                return True
-    return False
+    def __init__(
+        self,
+        query: str = "bitcoin OR btc",
+        fetch_limit: int = 100,
+        rolling_posts: int = 300,
+        use_ai_model: bool = True,
+        model_dir: str | None = None,
+        handle: str | None = None,
+        password: str | None = None,
+        debug: bool = False,
+    ):
+        self.query = query
+        self.fetch_limit = int(max(10, fetch_limit))
+        # Enforce a strict fixed-size ring buffer for persisted social posts.
+        self.rolling_posts = int(self.MAX_PERSISTED_POSTS)
+        self.handle = handle
+        self.password = password
+        self.debug = bool(debug)
+        self._seen_capacity = int(max(2500, self.rolling_posts * 10))
 
+        self._seen_fifo: Deque[str] = deque()
+        self._seen_uris: set[str] = set()
+        self._rolling_scored: Deque[dict] = deque(maxlen=self.rolling_posts)
+        self._rolling_posts_raw: Deque[dict] = deque(maxlen=self.rolling_posts)
+        self.posts_output_path = Path(ROOT) / "binance_realtime" / "bluesky_live_posts.json"
+        self.total_scored_posts: int = 0
 
-# ─────────────────────────────────────────────────────────────
-# STAGE 3: FEATURE ENGINEERING
-# What it does: Converts text/engagement/structure/time signals
-# into one numerical feature matrix.
-# Why it matters: Produces model-ready input for PCA or future
-# AI systems with a reproducible feature recipe.
-# ─────────────────────────────────────────────────────────────
+        self.last_factors = {
+            "turbulence": 0.5,
+            "trend_bias": 0.5,
+            "distortion": 0.5,
+            "fragmentation": 0.5,
+            "velocity": 0.5,
+            "quality": 0.0,
+        }
+        self.last_update_ts: float = 0.0
+        self.last_new_posts: int = 0
+        self.error_streak: int = 0
 
-def build_feature_matrix(
-    posts: list[dict],
-    embed_model: str = "all-MiniLM-L6-v2",
-    embedding_weight: float = 0.8,
-    structured_weight: float = 0.2,
-) -> np.ndarray:
-    """
-    Returns X : np.ndarray, shape (n_posts, embedding_dim + 15)
-    Ready to pass directly into your PCA / VAE.
-    """
-    if not posts:
-        print("[i] No posts found. Returning empty feature matrix.")
-        return np.empty((0, 15), dtype=np.float64)
+        self.ai_engine = None
+        if AIInferenceEngine is not None:
+            try:
+                self.ai_engine = AIInferenceEngine(
+                    use_ai_model=bool(use_ai_model),
+                    model_dir=model_dir or "AI_systems/scraper_model_artifacts",
+                )
+            except Exception as e:
+                if self.debug:
+                    print(f"[SOCIAL] AI engine init failed, falling back to lexical mode: {e}")
 
-    texts = [p["text"] for p in posts]
+    def _mark_seen(self, uri: str) -> None:
+        if not uri:
+            return
+        if uri in self._seen_uris:
+            return
+        self._seen_fifo.append(uri)
+        self._seen_uris.add(uri)
+        while len(self._seen_fifo) > self._seen_capacity:
+            old = self._seen_fifo.popleft()
+            self._seen_uris.discard(old)
 
-    # ── Semantic embeddings ───────────────────────────────────────────────────
-    print(f"[->] Encoding with {embed_model} ...")
-    embeddings = SentenceTransformer(embed_model).encode(
-        texts, show_progress_bar=True, batch_size=64
-    )  # (n, embedding_dim)
+    def _score_post(self, post: dict) -> Optional[dict]:
+        text = str(post.get("text", "") or "")
+        if not text.strip():
+            return None
 
-    # ── Engagement ────────────────────────────────────────────────────────────
-    log_likes   = np.log1p([p["like_count"]   for p in posts])
-    log_reposts = np.log1p([p["repost_count"] for p in posts])
-    log_replies = np.log1p([p["reply_count"]  for p in posts])
-    engagement  = log_likes + log_reposts * 2 + log_replies
+        normalized = _ai_normalize_text(text)
+        model_result = self.ai_engine.predict(normalized) if self.ai_engine is not None else {"source": "rules"}
+        source = str(model_result.get("source", "rules"))
 
-    # ── Structural ────────────────────────────────────────────────────────────
-    char_counts    = np.array([p["char_count"]  for p in posts], dtype=float)
-    word_counts    = np.array([p["word_count"]  for p in posts], dtype=float)
-    has_image      = np.array([p["has_image"]   for p in posts], dtype=float)
-    has_link       = np.array([p["has_link"]    for p in posts], dtype=float)
-    hashtag_counts = np.array([len(re.findall(r"#\w+", t)) for t in texts], dtype=float)
-    mention_counts = np.array([len(re.findall(r"@\w+", t)) for t in texts], dtype=float)
-    exclamations   = np.array([t.count("!")    for t in texts], dtype=float)
-    questions      = np.array([t.count("?")    for t in texts], dtype=float)
-    emoji_counts   = np.array([_count_emojis(t) for t in texts], dtype=float)
-
-    # ── Temporal (cyclical encoding) ──────────────────────────────────────────
-    hours    = np.array([_parse_hour(p["created_at"]) for p in posts])
-    hour_sin = np.sin(2 * np.pi * hours / 24)
-    hour_cos = np.cos(2 * np.pi * hours / 24)
-
-    # ── Assemble + standardise ────────────────────────────────────────────────
-    X_structured = np.column_stack([
-        log_likes, log_reposts, log_replies, engagement,
-        char_counts, word_counts, has_image, has_link,
-        hashtag_counts, mention_counts, exclamations, questions, emoji_counts,
-        hour_sin, hour_cos,
-    ])  # (n, 15)
-
-    X_structured = StandardScaler().fit_transform(X_structured)
-
-    X = np.hstack([embeddings * embedding_weight, X_structured * structured_weight])
-    print(f"[✓] Feature matrix ready: {X.shape}")
-    return X
-
-
-def _count_emojis(text: str) -> int:
-    return sum(1 for ch in text if unicodedata.category(ch) in ("So", "Sm"))
-
-
-def _parse_hour(ts: str) -> float:
-    try:
-        return float(datetime.fromisoformat(ts.replace("Z", "+00:00")).hour)
-    except Exception:
-        return 12.0
-
-
-# ─────────────────────────────────────────────────────────────
-# STAGE 4: INPUT + FRESHNESS HELPERS
-# What it does: Handles interactive credential prompts and reads
-# prior saved post identifiers for "new data" filtering.
-# Why it matters: Improves run reliability and helps generate
-# fresher snapshots across repeated executions.
-# ─────────────────────────────────────────────────────────────
-
-def _prompt_bluesky_credentials() -> tuple[str | None, str | None]:
-    """
-    Prompt for Bluesky credentials in interactive runs.
-    Returns (handle, app_password). If input is not provided, returns (None, None).
-    """
-    print("[i] Enter Bluesky credentials to fetch public posts.")
-    print("    Use your handle without @ (example: yourname.bsky.social)")
-
-    try:
-        handle = input("Bluesky handle: ").strip()
-    except EOFError:
-        return None, None
-
-    if not handle:
-        return None, None
-
-    if handle.startswith("@"):
-        handle = handle[1:]
-
-    print("[i] Password input is hidden; just type and press Enter.")
-    try:
-        password = getpass.getpass("Bluesky app password: ").strip()
-    except (EOFError, Exception):
-        print("[i] Hidden input is not available in this terminal. Falling back to visible input.")
-        try:
-            password = input("Bluesky app password (visible): ").strip()
-        except EOFError:
-            return None, None
-
-    if not password:
-        return None, None
-
-    return handle, password
-
-
-def _load_previous_uris(output_dir: str) -> set[str]:
-    posts_csv_path = Path(output_dir) / "posts.csv"
-    if not posts_csv_path.exists():
-        return set()
-
-    try:
-        uris: set[str] = set()
-        with posts_csv_path.open("r", encoding="utf-8", newline="") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                uri = (row.get("uri") or "").strip()
-                if uri:
-                    uris.add(uri)
-        return uris
-    except Exception:
-        return set()
-
-
-# ─────────────────────────────────────────────────────────────
-# STAGE 5: DATASET SERIALISATION
-# What it does: Writes raw posts, CSV table, feature arrays and
-# summary metadata into a reusable static dataset bundle.
-# Why it matters: Makes outputs directly consumable by your AI
-# modules and easy to inspect/debug between runs.
-# ─────────────────────────────────────────────────────────────
-
-def save_static_dataset(
-    posts: list[dict],
-    X: np.ndarray,
-    X_reduced: np.ndarray,
-    query: str,
-    output_dir: str,
-):
-    """
-    Save one static Bluesky dataset snapshot to disk.
-
-    Artifacts:
-            - posts.csv         : table view for quick inspection
-            - features.npy      : feature matrix for AI systems
-            - pca_3d.npy        : 3D coordinates for visualization
-            - summary.json      : run metadata and artifact paths
-    """
-    out = Path(output_dir)
-    out.mkdir(parents=True, exist_ok=True)
-
-    posts_csv_path = out / "posts.csv"
-    features_path = out / "features.npy"
-    pca_coords_path = out / "pca_3d.npy"
-    summary_path = out / "summary.json"
-
-    fieldnames = [
-        "text",
-        "created_at",
-        "like_count",
-        "repost_count",
-        "reply_count",
-        "uri",
-        "has_image",
-        "has_link",
-        "char_count",
-        "word_count",
-    ]
-    with posts_csv_path.open("w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(posts)
-
-    np.save(features_path, X)
-    np.save(pca_coords_path, X_reduced)
-
-    summary = {
-        "timestamp": datetime.now().isoformat(timespec="seconds"),
-        "query": query,
-        "num_posts": len(posts),
-        "feature_shape": list(X.shape),
-        "pca_shape": list(X_reduced.shape),
-        "artifacts": {
-            "posts_csv": str(posts_csv_path),
-            "features_npy": str(features_path),
-            "pca_3d_npy": str(pca_coords_path),
-        },
-    }
-
-    with summary_path.open("w", encoding="utf-8") as f:
-        json.dump(summary, f, ensure_ascii=False, indent=2)
-
-    return summary
-
-
-# ─────────────────────────────────────────────────────────────
-# STAGE 6: PIPELINE ORCHESTRATION
-# What it does: Executes the full batch flow end-to-end:
-# credentials → fetch → freshness filter → features → PCA → save.
-# Why it matters: Single entrypoint for repeatable experimentation
-# and consistent artifact generation per run.
-# ─────────────────────────────────────────────────────────────
-
-def run_static_bluesky_pipeline(
-    query: str = "generative art", # This can be parameterized as needed for different runs or experiments
-    limit: int = 300,
-    n_components: int = 3,
-    output_dir: str | None = None,
-    show_plot: bool = True,
-):
-    """
-    Static pipeline: fetch once, build features, fit PCA, save artifacts.
-    """
-    output_dir = output_dir or os.path.join(ROOT, "Data_Pipeline", "datasets", "bluesky_static")
-
-    env_handle = (os.getenv("BLUESKY_HANDLE") or "").strip()
-    env_password = (os.getenv("BLUESKY_APP_PASSWORD") or "").strip()
-
-    handle = env_handle or None
-    password = env_password or None
-
-    if not (handle and password):
-        print("[i] BLUESKY_HANDLE / BLUESKY_APP_PASSWORD not fully set in environment.")
-        prompt_handle, prompt_password = _prompt_bluesky_credentials()
-        if prompt_handle and prompt_password:
-            handle, password = prompt_handle, prompt_password
-            print(f"[i] Using prompted credentials for {handle}")
+        if source == "ml":
+            relevance_score = float(model_result.get("relevance_score", 0.0))
+            spam_score = float(model_result.get("spam_score", 0.0))
+            cluster_fg = float(model_result.get("fear_greed_score", 0.0))
+            lexical_fg, _ = _ai_fear_greed_score(normalized)
+            fear_greed_score = float(np.clip(0.70 * float(lexical_fg) + 0.30 * cluster_fg, -1.0, 1.0))
+            sentiment_label = _ai_sentiment_from_score(fear_greed_score)
+            topic_confidence = model_result.get("topic_confidence", {}) or {}
         else:
-            print("[i] No credentials entered. Attempting unauthenticated mode.")
+            relevance_score, _ = _ai_relevance_score(normalized, "bitcoin")
+            spam_score = 1.0 if _ai_is_probable_spam(normalized) else 0.0
+            fear_greed_score, sentiment_label = _ai_fear_greed_score(normalized)
+            topic_confidence = {tag: 1.0 for tag in _ai_extract_topic_tags(normalized)}
 
-    print(f"[i] Fetch request timestamp: {datetime.now().isoformat(timespec='seconds')}")
+        if spam_score >= 0.9 or relevance_score < 0.05:
+            return None
 
-    previous_uris = _load_previous_uris(output_dir)
-    if previous_uris:
-        print(f"[i] Previous dataset has {len(previous_uris)} post URIs; fetching unseen posts first.")
+        like_count = float(post.get("like_count", 0) or 0.0)
+        repost_count = float(post.get("repost_count", 0) or 0.0)
+        reply_count = float(post.get("reply_count", 0) or 0.0)
+        engagement = float(np.log1p(like_count + 1.4 * repost_count + reply_count))
 
-    fetch_pool_limit = max(limit * 3, limit)
-    posts_pool = fetch_bluesky_posts(
-        query=query,
-        limit=fetch_pool_limit,
-        handle=handle,
-        password=password,
-        sort="latest",
-        exclude_uris=previous_uris,
-    )
+        created_at = str(post.get("created_at", "") or "")
+        ts = time.time()
+        if created_at:
+            try:
+                ts = datetime.fromisoformat(created_at.replace("Z", "+00:00")).timestamp()
+            except Exception:
+                pass
 
-    if not posts_pool and previous_uris:
-        print("[i] No unseen posts found in latest pool; falling back to latest posts regardless of prior run.")
-        posts_pool = fetch_bluesky_posts(
-            query=query,
-            limit=fetch_pool_limit,
-            handle=handle,
-            password=password,
-            sort="latest",
-            exclude_uris=None,
+        return {
+            "timestamp": float(ts),
+            "fear_greed_score": float(np.clip(fear_greed_score, -1.0, 1.0)),
+            "sentiment_label": str(sentiment_label or "neutral"),
+            "relevance_score": _clip01(relevance_score),
+            "spam_score": _clip01(spam_score),
+            "engagement": float(max(0.0, engagement)),
+            "topic_confidence": {k: float(v) for k, v in topic_confidence.items()},
+            "source": source,
+        }
+
+    def _aggregate_factors(self) -> dict:
+        if not self._rolling_scored:
+            return dict(self.last_factors)
+
+        rows = list(self._rolling_scored)
+        fg = np.asarray([float(r["fear_greed_score"]) for r in rows], dtype=np.float64)
+        rel = np.asarray([float(r["relevance_score"]) for r in rows], dtype=np.float64)
+        spam = np.asarray([float(r["spam_score"]) for r in rows], dtype=np.float64)
+        engage = np.asarray([float(r["engagement"]) for r in rows], dtype=np.float64)
+        ts = np.asarray([float(r["timestamp"]) for r in rows], dtype=np.float64)
+
+        trend_bias = _clip01(0.5 + 0.5 * float(np.mean(fg)))
+
+        fg_diff = np.diff(fg) if fg.size > 1 else np.asarray([0.0], dtype=np.float64)
+        fg_std = float(np.std(fg))
+        fg_speed = float(np.mean(np.abs(fg_diff)))
+
+        if engage.size > 1:
+            engage_norm = (engage - np.mean(engage)) / (np.std(engage) + 1e-8)
+            engage_var = float(np.std(engage_norm))
+        else:
+            engage_var = 0.0
+
+        sentiment_counts = Counter([str(r.get("sentiment_label", "neutral")) for r in rows])
+        total_sent = float(max(1, sum(sentiment_counts.values())))
+        sent_probs = np.asarray([c / total_sent for c in sentiment_counts.values()], dtype=np.float64)
+        sent_entropy = float(-np.sum(sent_probs * np.log2(np.maximum(sent_probs, 1e-8))))
+        sent_entropy_norm = _clip01(sent_entropy / np.log2(3.0))
+
+        topic_accumulator: Dict[str, float] = {}
+        for row in rows:
+            topic_conf = row.get("topic_confidence", {}) or {}
+            for key, value in topic_conf.items():
+                topic_accumulator[key] = topic_accumulator.get(key, 0.0) + float(value)
+
+        if topic_accumulator:
+            topic_vals = np.asarray(list(topic_accumulator.values()), dtype=np.float64)
+            topic_probs = topic_vals / (np.sum(topic_vals) + 1e-8)
+            topic_entropy = float(-np.sum(topic_probs * np.log2(np.maximum(topic_probs, 1e-8))))
+            topic_entropy_norm = _clip01(topic_entropy / np.log2(max(2, len(topic_vals))))
+            topic_volatility = float(topic_accumulator.get("volatility", 0.0) / max(1, len(rows)))
+            topic_regime = float(
+                (
+                    topic_accumulator.get("macro", 0.0)
+                    + topic_accumulator.get("regulation", 0.0)
+                    + topic_accumulator.get("etf", 0.0)
+                )
+                / max(1, len(rows))
+            )
+        else:
+            topic_entropy_norm = 0.0
+            topic_volatility = 0.0
+            topic_regime = 0.0
+
+        now_ts = time.time()
+        recent_posts = int(np.sum(ts >= (now_ts - 300.0))) if ts.size else 0
+        post_rate_norm = _clip01(recent_posts / 20.0)
+
+        turbulence = _clip01(0.42 * fg_std + 0.36 * fg_speed + 0.22 * topic_volatility)
+        distortion = _clip01(0.45 * fg_speed + 0.30 * engage_var + 0.25 * topic_regime)
+        fragmentation = _clip01(0.55 * sent_entropy_norm + 0.45 * topic_entropy_norm)
+        velocity = _clip01(0.62 * fg_speed + 0.38 * post_rate_norm)
+
+        coverage = _clip01(len(rows) / float(self.rolling_posts))
+        quality = _clip01(
+            coverage
+            * (
+                0.55 * float(np.mean(rel))
+                + 0.25 * post_rate_norm
+                + 0.20 * (1.0 - float(np.mean(spam)))
+            )
         )
 
-    if len(posts_pool) > limit:
-        rng = np.random.default_rng()
-        sample_idx = rng.choice(len(posts_pool), size=limit, replace=False)
-        posts = [posts_pool[int(i)] for i in sample_idx]
-        print(f"[i] Sampled {limit} posts from fresh pool of {len(posts_pool)}.")
-    else:
-        posts = posts_pool
+        return {
+            "turbulence": turbulence,
+            "trend_bias": trend_bias,
+            "distortion": distortion,
+            "fragmentation": fragmentation,
+            "velocity": velocity,
+            "quality": quality,
+        }
 
-    if not posts:
-        print("[i] No Bluesky posts were returned for this query. Exiting cleanly.")
-        print("[i] If you are seeing AuthMissing, provide credentials when prompted or set env vars.")
-        return None
-
-    if len(posts) < limit:
-        print(f"[i] Retrieved {len(posts)} posts (requested {limit}). Continuing with available data.")
-
-    if posts:
-        first_created_at = posts[0].get("created_at", "")
-        last_created_at = posts[-1].get("created_at", "")
-        print(f"[i] Created_at range in fetched posts: newest={first_created_at} oldest={last_created_at}")
-
-    X = build_feature_matrix(posts)
-    if X.shape[0] == 0:
-        print("[i] Empty feature matrix after processing. Exiting cleanly.")
-        return None
-
-    pca = PCA(n_components=n_components)
-    if show_plot and n_components >= 3:
-        X_reduced = pca.fit_transform_plot(X, title="Bluesky Static Dataset PCA (Unified)")
-    else:
-        X_reduced = pca.fit_transform(X)
-    print(f"[✓] PCA reduced matrix ready: {X_reduced.shape}")
-    if getattr(pca, "explained_variance_ratio_", None) is not None:
-        print(f"[i] Explained variance ratio: {np.array2string(pca.explained_variance_ratio_, precision=4)}")
-    preview_rows = min(5, X_reduced.shape[0])
-    print(f"[i] PCA preview (first {preview_rows} rows):")
-    print(X_reduced[:preview_rows])
-
-    if show_plot and X_reduced.shape[1] >= 3:
+    def poll_once(self) -> dict:
         try:
-            import matplotlib.pyplot as plt
+            posts = fetch_bluesky_posts(
+                query=self.query,
+                limit=self.fetch_limit,
+                handle=self.handle,
+                password=self.password,
+                sort="latest",
+                exclude_uris=self._seen_uris,
+            )
 
-            print("[i] Showing unified PCA plot (close the plot window to continue)...")
-            plt.show(block=True)
+            new_scored = 0
+            for post in posts:
+                uri = str(post.get("uri", "") or "")
+                if uri and uri in self._seen_uris:
+                    continue
+
+                self._mark_seen(uri)
+                scored = self._score_post(post)
+                if scored is None:
+                    continue
+
+                self._rolling_scored.append(scored)
+                self._rolling_posts_raw.append(
+                    {
+                        "uri": str(post.get("uri", "") or ""),
+                        "created_at": str(post.get("created_at", "") or ""),
+                        "text": str(post.get("text", "") or ""),
+                        "like_count": int(float(post.get("like_count", 0) or 0)),
+                        "repost_count": int(float(post.get("repost_count", 0) or 0)),
+                        "reply_count": int(float(post.get("reply_count", 0) or 0)),
+                        "fear_greed_score": float(scored.get("fear_greed_score", 0.0)),
+                        "sentiment_label": str(scored.get("sentiment_label", "neutral")),
+                        "relevance_score": float(scored.get("relevance_score", 0.0)),
+                        "spam_score": float(scored.get("spam_score", 0.0)),
+                        "source": str(scored.get("source", "rules")),
+                        "topic_confidence": dict(scored.get("topic_confidence", {})),
+                        "scored_ts": float(scored.get("timestamp", time.time())),
+                    }
+                )
+                new_scored += 1
+                self.total_scored_posts += 1
+
+            self.last_new_posts = new_scored
+            if new_scored > 0:
+                self.last_factors = self._aggregate_factors()
+                self.last_update_ts = time.time()
+                self.error_streak = 0
+
+            if self.debug:
+                print(
+                    "[SOCIAL] "
+                    f"fetched={len(posts)} "
+                    f"new_scored={new_scored} "
+                    f"rolling={len(self._rolling_scored)} "
+                    f"social_quality={self.last_factors['quality']:.3f}"
+                )
+
+            self._persist_posts_json()
+            return dict(self.last_factors)
+
         except Exception as e:
-            print(f"[i] Could not display PCA plot in this environment: {e}")
-            
-   # ── Clustering + Quantitative Metrics (Silhouette + Entropy) ──
-    kmeans = KMeans(n_clusters=3, random_state=42)
+            self.error_streak += 1
+            if self.debug:
+                print(f"[SOCIAL] poll error (streak={self.error_streak}): {e}")
+            self._persist_posts_json()
+            # Freeze-on-failure behavior: keep last factors unchanged.
+            return dict(self.last_factors)
 
-    if show_plot and n_components >= 3:
-        X_reduced = pca.fit_transform(X)           # fit without plotting yet
-        labels = kmeans.fit_predict(X_reduced)
+    def _persist_posts_json(self) -> None:
+        try:
+            self.posts_output_path.parent.mkdir(parents=True, exist_ok=True)
+            posts_window = list(self._rolling_posts_raw)[-self.rolling_posts :]
+            payload = {
+                "updated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                "query": self.query,
+                "fetch_limit": int(self.fetch_limit),
+                "rolling_posts_target": int(self.rolling_posts),
+                "rolling_posts_current": int(len(posts_window)),
+                "new_posts_last_poll": int(self.last_new_posts),
+                "total_scored_posts": int(self.total_scored_posts),
+                "error_streak": int(self.error_streak),
+                "factors": dict(self.last_factors),
+                "posts": posts_window,
+            }
+            self.posts_output_path.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception as e:
+            if self.debug:
+                print(f"[SOCIAL] persist error: {e}")
 
-        sil_score = silhouette_score(X_reduced, labels)
-        cluster_probs = np.bincount(labels) / len(labels)
-        cluster_probs = cluster_probs[cluster_probs > 0]
-        ent = -(cluster_probs * np.log2(cluster_probs)).sum()
+    def get_current_factors(self) -> dict:
+        return dict(self.last_factors)
 
-        pca.plot_unified(X, X_reduced,             # now plot with labels + metrics
-                        title="Bluesky Static Dataset PCA (Unified)",
-                        labels=labels,
-                        sil_score=sil_score,
-                        entropy=ent)
-    else:
-        X_reduced = pca.fit_transform(X)
-        labels = kmeans.fit_predict(X_reduced)
-
-        sil_score = silhouette_score(X_reduced, labels)
-        cluster_probs = np.bincount(labels) / len(labels)
-        cluster_probs = cluster_probs[cluster_probs > 0]
-        ent = -(cluster_probs * np.log2(cluster_probs)).sum()
-
-    print(f"[✓] Silhouette Score: {sil_score:.4f}")
-    print(f"[✓] Cluster Entropy:  {ent:.4f}")
-    print(f"[i] Cluster Sizes:    {np.bincount(labels)}")
-
-# ─────────────────────────────────────────────────────────────
-# STAGE 7: SCRIPT ENTRYPOINT
-# What it does: Defines default run parameters for direct CLI use.
-# Why it matters: Keeps one obvious start point for project demos
-# and quick local experiments.
-# ─────────────────────────────────────────────────────────────
-
-if __name__ == "__main__":
-    run_static_bluesky_pipeline(query="generative art", limit=300, n_components=3)
-
-
-
-
-    
+    def get_snapshot(self) -> dict:
+        return {
+            "factors": dict(self.last_factors),
+            "last_update_ts": float(self.last_update_ts),
+            "rolling_posts": int(len(self._rolling_scored)),
+            "new_posts_last_poll": int(self.last_new_posts),
+            "error_streak": int(self.error_streak),
+            "posts_output_path": str(self.posts_output_path),
+        }

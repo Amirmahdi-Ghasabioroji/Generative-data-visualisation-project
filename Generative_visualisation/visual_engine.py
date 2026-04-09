@@ -28,6 +28,7 @@ class VisualEngine:
         self.ax = None
         self.scatter = None
         self.info_text = None
+        self.social_text = None
         self.regime_text = None
         self.market_text = None
         self.interpret_text = None
@@ -111,9 +112,21 @@ class VisualEngine:
             bbox={"facecolor": "#111827", "alpha": 0.55, "edgecolor": "#334155", "pad": 6},
         )
 
+        self.social_text = self.fig.text(
+            0.69,
+            0.75,
+            self._build_social_panel(),
+            color="white",
+            fontsize=8,
+            va="top",
+            ha="left",
+            family="monospace",
+            bbox={"facecolor": "#0f172a", "alpha": 0.55, "edgecolor": "#334155", "pad": 6},
+        )
+
         self.regime_text = self.fig.text(
             0.69,
-            0.66,
+            0.60,
             self._build_regime_panel(),
             color="white",
             fontsize=8,
@@ -125,7 +138,7 @@ class VisualEngine:
 
         self.market_text = self.fig.text(
             0.69,
-            0.54,
+            0.53,
             self._build_market_panel(),
             color="white",
             fontsize=8,
@@ -137,7 +150,7 @@ class VisualEngine:
 
         self.interpret_text = self.fig.text(
             0.69,
-            0.38,
+            0.36,
             self._build_interpretation_panel(),
             color="white",
             fontsize=8,
@@ -237,6 +250,35 @@ class VisualEngine:
             f"fragmentation: {fragmentation:0.3f}  [choppiness]\n"
             f"velocity    : {velocity:0.3f}  [state-change speed]\n"
             f"quality     : {quality:0.3f}  [confidence]"
+        )
+
+    def _build_social_panel(self) -> str:
+        mc = self.latest_market_condition
+
+        social_blend_weight = float(np.clip(float(mc.get("social_blend_weight", 0.0)), 0.0, 1.0))
+        social_quality = float(np.clip(float(mc.get("social_quality", 0.0)), 0.0, 1.0))
+        social_posts = int(max(0, round(float(mc.get("social_posts", 0.0)))))
+        social_age_sec = float(max(0.0, float(mc.get("social_age_sec", 9999.0))))
+        social_stale = float(mc.get("social_stale", 1.0)) >= 0.5
+        social_valid = float(mc.get("social_valid", 0.0)) >= 0.5
+        social_error_streak = int(max(0, round(float(mc.get("social_error_streak", 0.0)))))
+
+        if social_valid and not social_stale:
+            social_status = "OK"
+        elif social_stale:
+            social_status = "STALE"
+        else:
+            social_status = "LOW_CONF"
+
+        return (
+            "Social validation\n"
+            "─────────────────\n"
+            f"status      : {social_status}\n"
+            f"blend weight: {social_blend_weight:0.3f} [social influence, scale with quality]\n"
+            f"social quality: {social_quality:0.3f} [confidence score, relevancy]\n"
+            f"posts  : {social_posts:d} [posts in rolling window]\n"
+            f"age(sec)    : {social_age_sec:0.1f}\n"
+            f"err streak  : {social_error_streak:d}"
         )
 
     def _build_info_panel(self, params: dict[str, float]) -> str:
@@ -412,14 +454,25 @@ class VisualEngine:
                 "n_regimes": int(regime_info.get("n_regimes", 0)),
             }
         if market_condition is not None:
-            self.latest_market_condition = {
-                "turbulence": float(market_condition.get("turbulence", 0.5)),
-                "trend_bias": float(market_condition.get("trend_bias", 0.5)),
-                "distortion": float(market_condition.get("distortion", 0.5)),
-                "fragmentation": float(market_condition.get("fragmentation", 0.5)),
-                "velocity": float(market_condition.get("velocity", 0.5)),
-                "quality": float(market_condition.get("quality", 0.0)),
-            }
+            current = dict(self.latest_market_condition)
+            current.update(
+                {
+                    "turbulence": float(market_condition.get("turbulence", 0.5)),
+                    "trend_bias": float(market_condition.get("trend_bias", 0.5)),
+                    "distortion": float(market_condition.get("distortion", 0.5)),
+                    "fragmentation": float(market_condition.get("fragmentation", 0.5)),
+                    "velocity": float(market_condition.get("velocity", 0.5)),
+                    "quality": float(market_condition.get("quality", 0.0)),
+                    "social_blend_weight": float(market_condition.get("social_blend_weight", current.get("social_blend_weight", 0.0))),
+                    "social_quality": float(market_condition.get("social_quality", current.get("social_quality", 0.0))),
+                    "social_posts": float(market_condition.get("social_posts", current.get("social_posts", 0.0))),
+                    "social_age_sec": float(market_condition.get("social_age_sec", current.get("social_age_sec", 9999.0))),
+                    "social_stale": float(market_condition.get("social_stale", current.get("social_stale", 1.0))),
+                    "social_valid": float(market_condition.get("social_valid", current.get("social_valid", 0.0))),
+                    "social_error_streak": float(market_condition.get("social_error_streak", current.get("social_error_streak", 0.0))),
+                }
+            )
+            self.latest_market_condition = current
         self._apply_regime_style(self.latest_regime_info)
 
         self.target_params = {
@@ -432,6 +485,8 @@ class VisualEngine:
 
         if self.info_text is not None:
             self.info_text.set_text(self._build_info_panel(self.latest_model_params))
+        if self.social_text is not None:
+            self.social_text.set_text(self._build_social_panel())
         if self.regime_text is not None:
             self.regime_text.set_text(self._build_regime_panel())
         if self.market_text is not None:
