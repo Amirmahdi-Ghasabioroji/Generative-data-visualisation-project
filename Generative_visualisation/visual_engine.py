@@ -18,9 +18,11 @@ Legacy live keys are still accepted for compatibility:
 
 from __future__ import annotations
 
+from collections import deque
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+from matplotlib.collections import LineCollection
 from matplotlib import cm
 from typing import Optional
 
@@ -34,6 +36,7 @@ class VisualEngine:
         self.fig = None
         self.ax = None
         self.scatter = None
+        self.tail_collection = None
         self.info_text = None
         self.social_text = None
         self.regime_text = None
@@ -44,6 +47,7 @@ class VisualEngine:
         self.anim_timer = None
 
         self.positions = None
+        self.trail_history = deque(maxlen=5)
         self.velocities = None
         self.colors = None
         self.phase_offsets = None   # per-particle fixed colour phase seed
@@ -53,7 +57,9 @@ class VisualEngine:
 
         self.frame_idx = 0
         # Lower alpha smooths parameter transitions between sparse upstream updates.
-        self.smoothing_alpha = 0.07
+        self.smoothing_alpha = 0.055
+        # Global temporal scale for live animation. 0.90 => ~10% slower overall.
+        self.global_speed_scale = 0.90
         self.tick_interval_ms = 16
         self.current_params = {
             "turbulence": 0.5,
@@ -69,6 +75,10 @@ class VisualEngine:
         self.current_regime_id: Optional[int] = None
         self.current_regime_confidence = 0.0
         self.current_n_regimes = 0
+        self.tail_base_alpha = 0.065
+        # Particle count controls with hysteresis to avoid rapid resize thrashing.
+        self._density_ema = 0.50
+        self._resize_hysteresis = 14
         self.latest_regime_info: dict = {
             "regime_id": None,
             "confidence": 0.0,
@@ -90,7 +100,7 @@ class VisualEngine:
 
         # Subtle pulse on regime switch: briefly lifts motion + distortion only
         self._flash_frames = 0
-        self._flash_max = 49  # ~0.8s at 24ms per frame
+        self._flash_max = 58  # longer, softer cinematic pulse
 
     def _ensure_plot(self):
         if self.fig is not None and self.ax is not None:
@@ -374,6 +384,8 @@ class VisualEngine:
         # Each particle gets a fixed phase seed so colour ripples across the cloud
         self.phase_offsets = np.random.uniform(0.0, 1.0, size=n_particles).astype(np.float32)
         self.colors = cm.RdYlGn(np.linspace(0, 1, n_particles))
+        self.trail_history.clear()
+        self.trail_history.append(self.positions.copy())
 
     def _sample_galaxy_positions(self, n_particles: int) -> np.ndarray:
         if n_particles <= 0:
@@ -428,6 +440,12 @@ class VisualEngine:
             self.colors = self.colors[keep_idx]
             if self.phase_offsets is not None:
                 self.phase_offsets = self.phase_offsets[keep_idx]
+            if len(self.trail_history) > 0:
+                new_history = deque(maxlen=self.trail_history.maxlen)
+                for frame in self.trail_history:
+                    if frame.shape[0] == current:
+                        new_history.append(frame[keep_idx])
+                self.trail_history = new_history
             return
 
         add = n_particles - current
@@ -448,6 +466,12 @@ class VisualEngine:
             self.phase_offsets = np.concatenate([self.phase_offsets, new_offsets])
         else:
             self.phase_offsets = new_offsets
+        if len(self.trail_history) > 0:
+            new_history = deque(maxlen=self.trail_history.maxlen)
+            for frame in self.trail_history:
+                if frame.shape[0] == current:
+                    new_history.append(np.vstack([frame, new_pos]))
+            self.trail_history = new_history
 
     def render(
         self,
@@ -524,17 +548,22 @@ class VisualEngine:
         distortion = self.current_params["distortion"]
         fragmentation = self.current_params["fragmentation"]
         velocity = self.current_params["velocity"]
+        speed_scale = float(np.clip(self.global_speed_scale, 0.70, 1.20))
 
         # Derived renderer controls preserve existing visual behavior while
         # keeping externally visible parameters theta-aligned.
         motion = float(np.clip(0.52 * velocity + 0.48 * turbulence, 0.0, 1.0))
-        density = float(np.clip(1.0 - 0.72 * fragmentation, 0.0, 1.0))
+        density_raw = float(np.clip(1.0 - 0.72 * fragmentation, 0.0, 1.0))
+        self._density_ema = float(0.90 * self._density_ema + 0.10 * density_raw)
+        density = self._density_ema
         noise = float(np.clip(0.62 * fragmentation + 0.38 * turbulence, 0.0, 1.0))
         color_dyn = float(np.clip(0.56 * abs(trend_bias - 0.5) * 2.0 + 0.44 * velocity, 0.0, 1.0))
 
         # Density modulates particle budget while keeping a minimum visual baseline.
-        n_particles = int(self.base_particles + density * 440)
-        self._resize_particles(n_particles)
+        desired_particles = int(self.base_particles + density * 440)
+        current_particles = 0 if self.positions is None else int(self.positions.shape[0])
+        if current_particles == 0 or abs(desired_particles - current_particles) >= self._resize_hysteresis:
+            self._resize_particles(desired_particles)
 
         center = self.positions.copy()
         radius = np.linalg.norm(center, axis=1) + 1e-6
@@ -544,25 +573,25 @@ class VisualEngine:
         flash_t = 0.0
         if self._flash_frames > 0:
             flash_t = (self._flash_frames / self._flash_max) ** 0.5
-            motion = float(np.clip(motion + 0.35 * flash_t, 0.0, 1.0))
-            distortion = float(np.clip(distortion + 0.25 * flash_t, 0.0, 1.0))
-            noise = float(np.clip(noise + 0.15 * flash_t, 0.0, 1.0))
+            motion = float(np.clip(motion + 0.26 * flash_t, 0.0, 1.0))
+            distortion = float(np.clip(distortion + 0.18 * flash_t, 0.0, 1.0))
+            noise = float(np.clip(noise + 0.10 * flash_t, 0.0, 1.0))
             self._flash_frames -= 1
 
         # Spiral flow with loostened constraints for smoother drift
         radial_norm = np.clip(radius / 1.25, 0.0, 1.0)
-        omega = (0.0096 + 0.0580 * motion) * (1.25 - 0.46 * radial_norm)
-        arm_phase = 0.38 * np.sin(self.arm_count * theta - 0.040 * self.frame_idx)
-        theta_next = theta + omega + 0.0240 * distortion * arm_phase
+        omega = speed_scale * (0.0096 + 0.0580 * motion) * (1.25 - 0.46 * radial_norm)
+        arm_phase = 0.38 * np.sin(self.arm_count * theta - (0.040 * speed_scale) * self.frame_idx)
+        theta_next = theta + omega + speed_scale * 0.0240 * distortion * arm_phase
 
-        inward = 0.00039 + 0.0022 * distortion
-        breathing = 0.00040 * np.sin(0.022 * self.frame_idx + 3.5 * theta)
-        radial_noise = np.random.normal(0.0, 0.00035 + 0.0012 * noise, size=radius.shape)
+        inward = speed_scale * (0.00039 + 0.0022 * distortion)
+        breathing = 0.00040 * np.sin((0.022 * speed_scale) * self.frame_idx + 3.5 * theta)
+        radial_noise = np.random.normal(0.0, 0.92 * (0.00035 + 0.0012 * noise), size=radius.shape)
         radius_next = np.clip(radius - inward * radial_norm + breathing + radial_noise, 0.04, 1.22)
 
         next_pos = np.column_stack([radius_next * np.cos(theta_next), radius_next * np.sin(theta_next)]).astype(np.float32)
         # Loosen constraint: reduce spiral snap-back, allow more natural drift
-        self.velocities = 0.75 * self.velocities + 0.25 * (next_pos - self.positions)
+        self.velocities = 0.80 * self.velocities + 0.20 * (next_pos - self.positions)
         self.positions = next_pos
 
         radius = np.linalg.norm(self.positions, axis=1)
@@ -578,7 +607,7 @@ class VisualEngine:
         # Keep a light spatial/time texture so the cloud is not flat.
         offsets = self.phase_offsets if self.phase_offsets is not None else 0.0
         texture = 0.12 * (offsets - 0.5) + 0.10 * (warm_bias - 0.5)
-        shimmer = 0.05 * np.sin(self.frame_idx * (0.003 + 0.014 * color_dyn) + 6.0 * offsets)
+        shimmer = 0.04 * np.sin(self.frame_idx * (speed_scale * (0.003 + 0.014 * color_dyn)) + 6.0 * offsets)
         phase = np.clip(trend_bias + texture + shimmer, 0.0, 1.0)
         self.colors = cm.RdYlGn(phase)
 
@@ -600,6 +629,62 @@ class VisualEngine:
         alpha_base = 0.18 + 0.55 * (0.55 * density + 0.45 * color_dyn)
         per_alpha = alpha_base * (0.60 + 0.65 * core_emphasis) + 0.28 * vel_norm
         self.colors[:, 3] = np.clip(per_alpha + 0.25 * flash_t, 0.15, 1.0)
+
+        # Build a short fading multi-segment trail history for more natural tails.
+        self.trail_history.append(self.positions.copy())
+        history = list(self.trail_history)
+        can_draw_trails = (
+            len(history) >= 2
+            and self.positions is not None
+            and self.positions.shape[0] > 0
+            and all(h.shape == self.positions.shape for h in history)
+        )
+
+        if can_draw_trails:
+            all_segments = []
+            all_colors = []
+            all_widths = []
+
+            n_links = len(history) - 1
+            for i in range(n_links):
+                p0 = history[i]
+                p1 = history[i + 1]
+                seg = np.stack([p0, p1], axis=1)
+                all_segments.append(seg)
+
+                # Older segments are thinner/fainter; newer segments are slightly stronger.
+                age_mix = float((i + 1) / max(1, n_links))
+                c = self.colors.copy()
+                c[:, 3] = np.clip(
+                    (0.35 + 0.65 * age_mix) * (self.tail_base_alpha + 0.09 * vel_norm)
+                    + 0.06 * flash_t,
+                    0.03,
+                    0.20,
+                )
+                all_colors.append(c)
+
+                w = (0.20 + 0.55 * age_mix) * (0.45 + 0.80 * vel_norm)
+                all_widths.append(w)
+
+            segments = np.concatenate(all_segments, axis=0)
+            colors = np.concatenate(all_colors, axis=0)
+            widths = np.concatenate(all_widths, axis=0)
+
+            if self.tail_collection is None:
+                self.tail_collection = LineCollection(
+                    segments,
+                    colors=colors,
+                    linewidths=widths,
+                    capstyle="round",
+                    zorder=1.7,
+                )
+                self.ax.add_collection(self.tail_collection)
+            else:
+                self.tail_collection.set_segments(segments)
+                self.tail_collection.set_color(colors)
+                self.tail_collection.set_linewidths(widths)
+        elif self.tail_collection is not None:
+            self.tail_collection.set_segments([])
 
         if self.scatter is None:
             self.scatter = self.ax.scatter(
